@@ -57,6 +57,47 @@ PathAPI.stop("reason");
 
 Methods are safe to call off the client thread: they re-dispatch onto it.
 
+## Lua scripting (NeoScripts)
+
+`lua/lib/pathfinder.lua` is a NeoScripts library that reaches the same API through
+LuaJava reflection (`luajava.bindClass`), so no Java bindings are needed — NeoScripts
+maps the Minecraft class names itself.
+
+Install (instance `config` folder):
+
+```
+config/neoscripts/scripts/lib/pathfinder.lua
+config/neoscripts/scripts/neopath_walk.lua   -- test script, walks to -300 -61 -83
+```
+
+Usage:
+
+```lua
+local pf = require("pathfinder")
+
+pf.on_finish(function() pf.log("done") end)
+pf.on_fail(function() pf.log("no path") end)
+pf.go(-300, -61, -83)          -- go / add_waypoint / start / stop / clear
+
+pf.is_running()                -- queue active
+pf.is_pathing()                -- a segment is being followed
+pf.pos()                       -- {x, y, z} of the player
+pf.target()                    -- BlockPos table of the current node
+pf.waypoints()                 -- queued destinations
+pf.telemetry()                 -- last search: path_length, total_ms, expanded_nodes, ...
+pf.set_sprint(false)
+pf.set_rotation(false, 500, 2.0)
+pf.on_tick(function() end)     -- returns an unregister function
+pf.bind("net.minecraft.core.BlockPos")  -- any other class, via luajava
+```
+
+Load the test script in game with `/lua load neopath_walk`.
+
+Every Java call in this LuaJ build takes an explicit `self`, so use `:` — including static
+methods (`API:goTo(...)`, `Minecraft:getInstance()`); `obj.method()` raises
+`method cannot be called without instance`. NeoScripts' own modules (`player`, `world`)
+keep the dot form.
+
 ## Build
 
 ```

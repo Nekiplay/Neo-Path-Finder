@@ -8,8 +8,14 @@ import kotlin.math.sqrt
 class Goal(val goalX: Int, val goalY: Int, val goalZ: Int, val ctx: CalculationContext) : IGoal {
     private val SQRT_2 = sqrt(2.0)
 
+    /** Chebyshev tolerance in blocks; 0 means the exact cell is required. */
+    var tolerance: Int = 0
+
     override fun isAtGoal(x: Int, y: Int, z: Int): Boolean {
-        return goalX == x && goalY == y && goalZ == z
+        if (tolerance <= 0) {
+            return goalX == x && goalY == y && goalZ == z
+        }
+        return abs(goalX - x) <= tolerance && abs(goalY - y) <= tolerance && abs(goalZ - z) <= tolerance
     }
 
     override fun heuristic(x: Int, y: Int, z: Int): Double {

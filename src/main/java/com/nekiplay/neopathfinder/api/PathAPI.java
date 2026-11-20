@@ -174,6 +174,21 @@ public final class PathAPI {
     }
 
     /**
+     * Upper bound on A* loop passes per search. Raise it for very long routes; a search that
+     * hits the limit fails with the reason "max_iterations".
+     */
+    public static void setSearchLimit(int iterations) {
+        if (iterations > 0) {
+            com.nekiplay.neopathfinder.pathfinder.calculate.path.AStarPathFinder.setMaxIterations(iterations);
+        }
+    }
+
+    /** Current A* loop-pass limit. */
+    public static int getSearchLimit() {
+        return com.nekiplay.neopathfinder.pathfinder.calculate.path.AStarPathFinder.getMaxIterations();
+    }
+
+    /**
      * Called once when the queued path completes successfully.
      */
     public static void onFinish(Runnable callback) {

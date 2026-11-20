@@ -479,6 +479,44 @@ object BlockUtil {
         return isStraightLineClear(ctx, from, Vec3.atCenterOf(to), fromFeetY, targetSurface)
     }
 
+    /**
+     * The requested destination is often not a cell the player can stand in (inside a block, on a
+     * ledge, mid-air). Returns the closest standable cell within two blocks, or the input unchanged.
+     */
+    fun snapGoal(ctx: CalculationContext, end: BlockPos): BlockPos {
+        if (isStandableCell(ctx, end)) {
+            return end
+        }
+        var best: BlockPos? = null
+        var bestScore = Double.MAX_VALUE
+        for (dx in -2..2) {
+            for (dy in -2..2) {
+                for (dz in -2..2) {
+                    if (dx == 0 && dy == 0 && dz == 0) {
+                        continue
+                    }
+                    val candidate = BlockPos(end.x + dx, end.y + dy, end.z + dz)
+                    if (!isStandableCell(ctx, candidate)) {
+                        continue
+                    }
+                    val score = abs(dx) + abs(dz) + abs(dy) * 2.0
+                    if (score < bestScore) {
+                        bestScore = score
+                        best = candidate
+                    }
+                }
+            }
+        }
+        return best ?: end
+    }
+
+    private fun isStandableCell(ctx: CalculationContext, pos: BlockPos): Boolean {
+        if (!MovementHelper.canStandOn(ctx.bsa, pos.x, pos.y, pos.z, ctx.get(pos.x, pos.y, pos.z))) {
+            return false
+        }
+        return MovementHelper.canWalkThrough(ctx.bsa, pos.x, pos.y + 1, pos.z, ctx.get(pos.x, pos.y + 1, pos.z))
+    }
+
     /** True when the feet space of the given cell is occupied, so the player may be embedded in it. */
     fun isStandingCellBlocked(ctx: CalculationContext, standing: BlockPos): Boolean {
         return !MovementHelper.canWalkThrough(ctx.bsa, standing.x, standing.y + 1, standing.z, ctx.get(standing.x, standing.y + 1, standing.z))

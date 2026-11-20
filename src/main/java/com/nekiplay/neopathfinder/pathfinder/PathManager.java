@@ -34,6 +34,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
 public final class PathManager {
 
     private static final Minecraft mc = Minecraft.getInstance();
+    /** Cells around the goal accepted when the exact cell is unreachable. */
+    private static final int GOAL_TOLERANCE = 2;
     private static PathManager instance;
 
     private final Deque<Pair<BlockPos, BlockPos>> pathQueue = new ConcurrentLinkedDeque<>();
@@ -266,6 +268,11 @@ public final class PathManager {
                     Logger.sendLog("Standing cell " + standingCell + " is partially blocked, escaping via " + escapedStart);
                     start = escapedStart;
                 }
+                BlockPos snappedEnd = com.nekiplay.neopathfinder.pathfinder.util.BlockUtil.INSTANCE.snapGoal(ctx, end);
+                if (!snappedEnd.equals(end)) {
+                    Logger.sendLog("Goal " + end + " is not standable, snapping to " + snappedEnd);
+                    end = snappedEnd;
+                }
                 Goal goal = new Goal(end.getX(), end.getY(), end.getZ(), ctx);
                 Path path;
                 AStarPathFinder.SearchTelemetry searchTelemetry = null;
@@ -287,6 +294,15 @@ public final class PathManager {
                     long searchStartNs = System.nanoTime();
                     finder = new AStarPathFinder(start.getX(), start.getY(), start.getZ(), goal, ctx);
                     path = finder.calculatePath();
+                    if (path == null) {
+                        // The exact goal cell can genuinely be unreachable (a ledge, a cell behind an
+                        // obstacle). Retry accepting any node next to it instead of failing outright.
+                        goal.setTolerance(GOAL_TOLERANCE);
+                        finder = new AStarPathFinder(start.getX(), start.getY(), start.getZ(), goal, ctx);
+                        path = finder.calculatePath();
+                        Logger.sendLog("Retried search with goal tolerance " + GOAL_TOLERANCE + ": "
+                                + (path != null ? path.getPath().size() + " nodes" : "still nothing"));
+                    }
                     searchMs = (System.nanoTime() - searchStartNs) / 1_000_000.0;
                     searchTelemetry = finder.getLastTelemetry();
                     Logger.sendLog("done pathfinding");

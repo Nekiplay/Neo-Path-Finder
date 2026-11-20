@@ -17,7 +17,12 @@ import com.nekiplay.neopathfinder.pathfinder.movement.MovementHelper
 
 class AStarPathFinder(val startX: Int, val startY: Int, val startZ: Int, val goal: Goal, val ctx: CalculationContext) {
     companion object {
-        private const val MAX_ITERATIONS = 50_000
+        /**
+         * Upper bound on search loop passes. Far goals legitimately need hundreds of thousands of
+         * expansions, so the default is generous and callers may raise it at runtime.
+         */
+        @JvmStatic
+        var maxIterations = 2_000_000
         private const val ITERATION_STEP = 1
     }
 
@@ -57,7 +62,7 @@ class AStarPathFinder(val startX: Int, val startY: Int, val startZ: Int, val goa
         openSet.add(startNode)
         openSetPeak = maxOf(openSetPeak, openSet.size)
 
-        while (!openSet.isEmpty() && calculating && iterations < MAX_ITERATIONS) {
+        while (!openSet.isEmpty() && calculating && iterations < maxIterations) {
             iterations++
 
             if (iterations % ITERATION_STEP != 0) continue
@@ -116,7 +121,7 @@ class AStarPathFinder(val startX: Int, val startY: Int, val startZ: Int, val goa
         }
         val terminationReason = when {
             !calculating -> "stop_requested"
-            iterations >= MAX_ITERATIONS -> "max_iterations"
+            iterations >= maxIterations -> "max_iterations"
             else -> "open_set_exhausted"
         }
         calculating = false
