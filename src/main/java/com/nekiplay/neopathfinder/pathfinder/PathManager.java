@@ -186,10 +186,20 @@ public final class PathManager {
 
     private void resetStatesAfterStop() {
         if (this.finder != null) {
-            this.finder.requestStop();
+            try {
+                this.finder.requestStop();
+            } catch (Exception e) {
+                NeoPathfinder.LOGGER.warn("Failed to stop the running search", e);
+            }
+            this.finder = null;
         }
-        this.pathExecutor.stop();
-        com.nekiplay.neopathfinder.handler.RotationHandler.getInstance().stop();
+        try {
+            this.pathExecutor.stop();
+        } finally {
+            // Stuck keys and a stale rendered path are worse than a second release call.
+            com.nekiplay.neopathfinder.util.KeyBindUtil.releaseAllExcept();
+            com.nekiplay.neopathfinder.handler.RotationHandler.getInstance().stop();
+        }
     }
 
     private void stopOnClientThread(String reason) {
@@ -210,6 +220,12 @@ public final class PathManager {
             if (this.enabled) {
                 this.stop("Player or world is null");
             }
+            return;
+        }
+
+        if (!this.enabled) {
+            // Nothing is running, but the executor keeps its last stop reason and failure flag;
+            // ticking it here made every later tick re-report a failure that was already handled.
             return;
         }
 
@@ -245,6 +261,12 @@ public final class PathManager {
             return;
         }
 
+        if (!this.pathExecutor.isIdle()) {
+            // The previous segment is still being walked. Planning the next one now would start it
+            // wherever the player happens to be, which is far from the segment's own start.
+            return;
+        }
+
         NeoPathfinder.executor().execute(() -> {
             if (this.pathfinding) {
                 return;
@@ -258,8 +280,17 @@ public final class PathManager {
                 }
 
                 long startedAtMs = System.currentTimeMillis();
-                BlockPos start = startEnd.getFirst();
+                // Waypoints are chained, but the follower never lands exactly on the previous
+                // destination (one cell of drift is normal). Planning from the stale chained start
+                // builds a path that begins behind the player, and steering at it walks into walls.
+                BlockPos requestedStart = startEnd.getFirst();
+                BlockPos liveStart = PlayerUtil.getBlockStandingOn();
+                if (!liveStart.equals(requestedStart)) {
+                    Logger.sendLog("Chained segment requested from " + requestedStart + ", replanning from " + liveStart);
+                }
+                BlockPos start = liveStart;
                 BlockPos end = startEnd.getSecond();
+                Logger.sendLog("planning segment " + start + " -> " + end + " (" + this.pathQueue.size() + " more queued)");
                 double walkSpeed = mc.player.getSpeed();
                 CalculationContext ctx = new CalculationContext(walkSpeed * 1.3, walkSpeed, walkSpeed * 0.3);
                 BlockPos standingCell = start;

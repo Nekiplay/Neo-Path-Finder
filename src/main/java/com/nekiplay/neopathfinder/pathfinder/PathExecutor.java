@@ -43,6 +43,9 @@ public class PathExecutor {
     private static final double STUCK_SPEED_THRESHOLD = 0.05;
     private static final int STUCK_DETECTION_MS = 1000;
     private static final int TARGET_LOOKAHEAD = 3;
+    /** A chained segment may start this far (blocks) from the previous goal and still be accepted. */
+    private static final double MAX_SEGMENT_DRIFT_HORIZONTAL = 2.5;
+    private static final int MAX_SEGMENT_DRIFT_VERTICAL = 2;
     private static final int STUCK_RECOVERY_TIMEOUT_MS = 700;
     private static PathExecutor instance;
     private final Minecraft mc = Minecraft.getInstance();
@@ -115,7 +118,6 @@ public class PathExecutor {
         if (path.getPath().isEmpty()) {
             this.stopReason = "Rejected empty path segment";
             error("Path is empty");
-            failed = true;
             return;
         }
 
@@ -123,10 +125,26 @@ public class PathExecutor {
         Path lastPath = (this.curr != null) ? this.curr : this.pathQueue.peekLast();
 
         if (lastPath != null && !lastPath.getGoal().isAtGoal(start.getX(), start.getY(), start.getZ())) {
-            this.stopReason = "Rejected disjoint path segment";
-            error("This path segment does not start at last path's goal. LastpathGoal: " + lastPath.getGoal() + ", ThisPathStart: " + start);
-            failed = true;
-            return;
+            // Chained waypoints are planned from the player's live cell, so a different start is
+            // normal; only a segment that starts somewhere else entirely is a real error.
+            boolean acceptable = false;
+            if (lastPath.getGoal() instanceof com.nekiplay.neopathfinder.pathfinder.goal.Goal previousGoal) {
+                double driftX = start.getX() - previousGoal.getGoalX();
+                double driftZ = start.getZ() - previousGoal.getGoalZ();
+                double drift = Math.sqrt(driftX * driftX + driftZ * driftZ);
+                int driftY = Math.abs(start.getY() - previousGoal.getGoalY());
+                acceptable = drift <= MAX_SEGMENT_DRIFT_HORIZONTAL && driftY <= MAX_SEGMENT_DRIFT_VERTICAL;
+                if (acceptable) {
+                    log("Accepting segment starting " + String.format(java.util.Locale.ROOT, "%.2f", drift)
+                            + " blocks from the previous goal");
+                }
+            }
+            if (!acceptable) {
+                this.stopReason = "Rejected disjoint path segment";
+                error("This path segment does not start at last path's goal. LastpathGoal: " + lastPath.getGoal()
+                        + ", ThisPathStart: " + start);
+                return;
+            }
         }
 
         this.pathQueue.offer(path);
@@ -136,6 +154,9 @@ public class PathExecutor {
         this.state = State.STARTING_PATH;
         this.enabled = true;
         this.stopReason = "Running";
+        // A stale failure flag from a previous run turns every later stop() into a "failed" stop.
+        this.failed = false;
+        this.succeeded = false;
     }
 
     public void stop() {
@@ -306,6 +327,7 @@ public class PathExecutor {
                 }
                 this.state = State.WAITING;
                 this.stopReason = "Path queue drained; waiting";
+                this.failed = false;
                 return true;
             }
             this.succeeded = true;
@@ -350,6 +372,17 @@ public class PathExecutor {
             }
         }
 
+        // Final node: the segment is finished once the player is close to the goal. Without this the
+        // last node is only ever retired by the block-heuristic scan above, which requires the player
+        // to stand exactly inside the goal cell, and a near miss leaves the segment running forever.
+        if (this.target >= this.blockPath.size() - 1
+                && horizontalDistToCurrent <= NODE_REACHED_HORIZONTAL_DIST + 0.3
+                && verticalDistToCurrent <= NODE_REACHED_VERTICAL_TOLERANCE) {
+            this.previous = this.target;
+            this.target = this.blockPath.size();
+            log("reached final node, segment complete");
+        }
+
         boolean onGround = mc.player.onGround();
 
         // Only steer at a node the player can actually walk to in a straight line; otherwise aim at
@@ -357,7 +390,7 @@ public class PathExecutor {
         // wall corners that the path itself goes around.
         CalculationContext ctx = this.curr.getCtx();
         Vec3 playerFeet = mc.player.position();
-        int chosenIndex = this.target;
+        int chosenIndex = Math.min(this.target, this.blockPath.size() - 1);
         int lookaheadEnd = Math.min(this.target + TARGET_LOOKAHEAD, this.blockPath.size() - 1);
         for (int i = lookaheadEnd; i > this.target; i--) {
             BlockPos candidate = this.blockPath.get(i);
@@ -371,6 +404,9 @@ public class PathExecutor {
         if (this.moveTargetIndex > this.target && this.moveTargetIndex < this.blockPath.size()
                 && BlockUtil.INSTANCE.canWalkStraight(ctx, playerFeet, playerFeet.y, this.blockPath.get(this.moveTargetIndex))) {
             chosenIndex = this.moveTargetIndex;
+        }
+        if (this.target >= this.blockPath.size()) {
+            chosenIndex = this.blockPath.size() - 1;
         }
         this.moveTargetIndex = chosenIndex;
         BlockPos movementTarget = this.blockPath.get(chosenIndex);
@@ -486,6 +522,14 @@ public class PathExecutor {
         KeyBindUtil.setKeyBindState(mc.options.keySprint, this.allowSprint && yawDiff < MAX_YAW_DIFF_FOR_SPRINT && !shouldJump && !recoveryJumping);
 
         return mc.player.position().distanceToSqr(target.getX() + 0.5, target.getY() + 0.5, target.getZ() + 0.5) < 100;
+    }
+
+    /**
+     * True when the executor has no path loaded and nothing pre-queued, i.e. the next queued
+     * waypoint segment may be planned from the player's current position.
+     */
+    public boolean isIdle() {
+        return this.curr == null && this.pathQueue.isEmpty();
     }
 
     public void loadPath(Path path) {

@@ -392,7 +392,7 @@ object BlockUtil {
             val dx = abs(prev.x - pos.x)
             val dz = abs(prev.z - pos.z)
             if (maxOf(dx, dz) > 1 && !canWalkStraight(ctx, prev, pos)) {
-                return "segment $i $prev -> $pos crosses an obstacle"
+                return "segment $i $prev -> $pos crosses an obstacle or a gap"
             }
         }
         return null
@@ -441,6 +441,11 @@ object BlockUtil {
             if (!isBodyClear(ctx, cx, cz, surface)) return false
             if (!isBodyClear(ctx, cx + perpX, cz + perpZ, surface)) return false
             if (!isBodyClear(ctx, cx - perpX, cz - perpZ, surface)) return false
+            // A clear body is not enough: a straight segment may also span a hole or a chasm,
+            // and walking that is falling, not walking.
+            if (!hasGround(ctx, cx, cz, surface)) return false
+            if (!hasGround(ctx, cx + perpX, cz + perpZ, surface)) return false
+            if (!hasGround(ctx, cx - perpX, cz - perpZ, surface)) return false
         }
         return true
     }
@@ -451,6 +456,36 @@ object BlockUtil {
      * of a block wide, so "is this cell blocked" cannot answer whether the body fits - the real
      * shapes can, and they also tell a fence slab crossed from a fence slab merely stood next to.
      */
+    /**
+     * Ground support test for a sample of a straight segment: some block in the column must reach
+     * up to the walk surface (within one step, so slab and snow-layer tops stay legal). Air under
+     * the surface means the segment crosses a void.
+     */
+    private fun hasGround(ctx: CalculationContext, x: Double, z: Double, surfaceY: Double): Boolean {
+        val bx = Mth.floor(x)
+        val bz = Mth.floor(z)
+        val topY = Mth.floor(surfaceY - SURFACE_EPSILON)
+        val minTop = surfaceY - MovementHelper.stepHeight() - CORRIDOR_SAMPLE_STEP / 2
+        for (by in topY downTo topY - 1) {
+            val state = ctx.get(bx, by, bz)
+            if (state.isAir) {
+                continue
+            }
+            val maxY = try {
+                MovementHelper.collisionMaxY(state, ctx.world, BlockPos(bx, by, bz))
+            } catch (e: Exception) {
+                continue
+            }
+            if (maxY <= 0.0) {
+                continue
+            }
+            if (by + maxY >= minTop) {
+                return true
+            }
+        }
+        return false
+    }
+
     private fun isBodyClear(ctx: CalculationContext, x: Double, z: Double, surfaceY: Double): Boolean {
         val player = ctx.player
         val box = player.boundingBox.move(

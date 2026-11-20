@@ -22,6 +22,7 @@ config GUI, HUD, failsafes, macro recorder, route graph, tablist/scoreboard mirr
 ```
 /path <x> <y> <z>      walk to coordinates (replaces current path)
 /path add <x> <y> <z>  append a waypoint
+/path start            walk through the queued waypoints in order
 /path goto <x> <y> <z> same as bare /path
 /path list             list queued waypoints
 /path clear            clear the waypoint queue

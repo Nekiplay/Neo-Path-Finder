@@ -19,7 +19,8 @@ import static net.fabricmc.fabric.api.client.command.v2.ClientCommands.literal;
 
 /**
  * {@code /path x y z} — walk to the given coordinates.
- * Also exposes {@code /path add}, {@code /path stop}, {@code /path clear}, {@code /path list}, {@code /path stats}.
+ * Waypoint mode: {@code /path add x y z} … then {@code /path start} walks through them in order.
+ * Also exposes {@code /path stop}, {@code /path clear}, {@code /path list}, {@code /path stats}.
  */
 public final class PathCommand {
 
@@ -35,6 +36,16 @@ public final class PathCommand {
                             + (current == null ? "" : ", target=" + current.getX() + " " + current.getY() + " " + current.getZ()));
                     return 1;
                 })
+                .then(literal("start").executes(context -> {
+                    int queued = PathAPI.getWaypoints().size();
+                    if (queued == 0) {
+                        Logger.sendWarning("[Path] Queue is empty. Add points with /path add x y z.");
+                        return 0;
+                    }
+                    PathAPI.start();
+                    Logger.sendMessage("[Path] Walking through " + queued + " queued point(s).");
+                    return 1;
+                }))
                 .then(literal("stop").executes(context -> {
                     PathAPI.stop("Stopped by command");
                     Logger.sendMessage("[Path] Stopped.");
