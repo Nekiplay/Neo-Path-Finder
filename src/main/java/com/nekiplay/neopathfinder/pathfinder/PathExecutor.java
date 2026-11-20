@@ -72,6 +72,8 @@ public class PathExecutor {
     private boolean pendingStuckRecoveryJump = false;
     private double lastPitch = 10 + (15 - 10) * random.nextDouble();
     private int target = 0;
+    private int moveTargetIndex = -1;
+    private int retreatIndex = -1;
     private int previous = -1;
     private long nodeChangeTime = 0;
 
@@ -354,18 +356,53 @@ public class PathExecutor {
         // the furthest visible node ahead. Without this the follower pushes straight into fences and
         // wall corners that the path itself goes around.
         CalculationContext ctx = this.curr.getCtx();
-        BlockPos standingPos = PlayerUtil.getBlockStandingOn();
-        BlockPos movementTarget = target;
+        Vec3 playerFeet = mc.player.position();
+        int chosenIndex = this.target;
         int lookaheadEnd = Math.min(this.target + TARGET_LOOKAHEAD, this.blockPath.size() - 1);
         for (int i = lookaheadEnd; i > this.target; i--) {
             BlockPos candidate = this.blockPath.get(i);
-            if (BlockUtil.INSTANCE.canWalkStraight(ctx, standingPos, candidate)) {
-                movementTarget = candidate;
+            if (BlockUtil.INSTANCE.canWalkStraight(ctx, playerFeet, playerFeet.y, candidate)) {
+                chosenIndex = i;
                 break;
             }
         }
-        if (movementTarget == target && !BlockUtil.INSTANCE.canWalkStraight(ctx, standingPos, target)) {
-            log("target " + target + " is not directly reachable, keeping straight approach suppressed");
+        // Keep the previous choice while it stays visible, otherwise the follower oscillates between
+        // two equally valid lookahead nodes.
+        if (this.moveTargetIndex > this.target && this.moveTargetIndex < this.blockPath.size()
+                && BlockUtil.INSTANCE.canWalkStraight(ctx, playerFeet, playerFeet.y, this.blockPath.get(this.moveTargetIndex))) {
+            chosenIndex = this.moveTargetIndex;
+        }
+        this.moveTargetIndex = chosenIndex;
+        BlockPos movementTarget = this.blockPath.get(chosenIndex);
+        // Stepping back is only for the case where the player is embedded in a thin obstacle (a fence
+        // post, a wall corner) and therefore sees no direct line to the next node. Standing next to
+        // one must never trigger it.
+        boolean embedded = BlockUtil.INSTANCE.isStandingCellBlocked(ctx, PlayerUtil.getBlockStandingOn());
+        if (embedded && chosenIndex == this.target && !BlockUtil.INSTANCE.canWalkStraight(ctx, playerFeet, playerFeet.y, target)) {
+            // Nothing ahead is reachable in a straight line: step back into the node behind us (this
+            // is the cell the path started from, e.g. after escaping a fence cell) and stay on it
+            // until it is reached, so the follower does not jitter between the two.
+            if (this.retreatIndex < 0) {
+                for (int i = 0; i < this.target; i++) {
+                    if (BlockUtil.INSTANCE.canWalkStraight(ctx, playerFeet, playerFeet.y, this.blockPath.get(i))) {
+                        this.retreatIndex = i;
+                        break;
+                    }
+                }
+            }
+            if (this.retreatIndex >= 0 && this.retreatIndex < this.blockPath.size()) {
+                BlockPos retreat = this.blockPath.get(this.retreatIndex);
+                double retreatDist = Math.hypot(mc.player.getX() - retreat.getX() - 0.5, mc.player.getZ() - retreat.getZ() - 0.5);
+                if (retreatDist <= NODE_REACHED_HORIZONTAL_DIST + 0.15
+                        || !BlockUtil.INSTANCE.canWalkStraight(ctx, playerFeet, playerFeet.y, retreat)) {
+                    this.retreatIndex = -1;
+                } else {
+                    movementTarget = retreat;
+                    this.moveTargetIndex = this.retreatIndex;
+                }
+            }
+        } else {
+            this.retreatIndex = -1;
         }
 
         int targetX = movementTarget.getX();

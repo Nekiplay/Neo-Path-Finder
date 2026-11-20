@@ -31,6 +31,16 @@ class Path(start: PathNode, end: PathNode, val goal: Goal, val ctx: CalculationC
         node = listOfNodes.toList()
     }
 
+    /** Prepends the cell the player actually stands in, so the follower walks out of it first. */
+    fun prependStart(pos: BlockPos) {
+        if (path.isEmpty() || path[0] == pos) {
+            return
+        }
+        path = listOf(pos) + path
+        start = pos
+        smoothPath = listOf()
+    }
+
     // english is not my strong suit
     fun getSmoothedPath(): List<BlockPos> {
         if (smoothPath.isNotEmpty()) return smoothPath

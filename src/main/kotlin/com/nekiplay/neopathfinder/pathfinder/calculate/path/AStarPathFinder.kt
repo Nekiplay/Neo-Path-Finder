@@ -11,6 +11,8 @@ import com.nekiplay.neopathfinder.pathfinder.movement.MovementResult
 import com.nekiplay.neopathfinder.pathfinder.movement.Moves
 
 import net.minecraft.core.BlockPos
+import com.nekiplay.neopathfinder.pathfinder.util.BlockUtil
+import com.nekiplay.neopathfinder.pathfinder.movement.MovementHelper
 
 
 class AStarPathFinder(val startX: Int, val startY: Int, val startZ: Int, val goal: Goal, val ctx: CalculationContext) {
@@ -47,6 +49,9 @@ class AStarPathFinder(val startX: Int, val startY: Int, val startZ: Int, val goa
         val moves = Moves.entries.toTypedArray()
         var expandedNodes = 0
         var openSetPeak = 0
+        val startCellBlocked = !MovementHelper.canWalkThrough(
+            ctx.bsa, startX, startY + 1, startZ, ctx.get(startX, startY + 1, startZ)
+        )
         startNode.costSoFar = 0.0
         startNode.totalCost = startNode.costToEnd
         openSet.add(startNode)
@@ -70,9 +75,18 @@ class AStarPathFinder(val startX: Int, val startY: Int, val startZ: Int, val goa
                 )
                 return Path(startNode, currentNode, goal, ctx)
             }
+            val expandingStart = currentNode === startNode
             for (move in moves) {
                 res.reset()
                 move.calculate(ctx, currentNode.x, currentNode.y, currentNode.z, res)
+                // The player can stand inside a fence cell (the post is only a quarter block wide),
+                // so a same-level move out of such a start cell must be checked against the real
+                // player position: the fence slab is not passable even though the cell looks free.
+                if (expandingStart && startCellBlocked && res.y == startY
+                    && !BlockUtil.canWalkStraight(ctx, ctx.startFeet, ctx.startFeet.y, BlockPos(res.x, res.y, res.z))
+                ) {
+                    continue
+                }
                 var cost = res.cost
                 val isLoaded = isChunkLoaded(res.x, res.y, res.z)
                 if (!isLoaded) {

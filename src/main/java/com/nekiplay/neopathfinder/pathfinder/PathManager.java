@@ -260,13 +260,21 @@ public final class PathManager {
                 BlockPos end = startEnd.getSecond();
                 double walkSpeed = mc.player.getSpeed();
                 CalculationContext ctx = new CalculationContext(walkSpeed * 1.3, walkSpeed, walkSpeed * 0.3);
+                BlockPos standingCell = start;
+                BlockPos escapedStart = com.nekiplay.neopathfinder.pathfinder.util.BlockUtil.INSTANCE.escapeStartCell(ctx, standingCell);
+                if (escapedStart != null) {
+                    Logger.sendLog("Standing cell " + standingCell + " is partially blocked, escaping via " + escapedStart);
+                    start = escapedStart;
+                }
                 Goal goal = new Goal(end.getX(), end.getY(), end.getZ(), ctx);
                 Path path;
                 AStarPathFinder.SearchTelemetry searchTelemetry = null;
                 double searchMs = 0.0;
                 boolean sameHeightSegment = start.getY() == end.getY();
                 boolean directWalk = false;
-                if (sameHeightSegment && com.nekiplay.neopathfinder.pathfinder.util.BlockUtil.INSTANCE.canWalkBetween(ctx, start, end)) {
+                if (sameHeightSegment
+                        && com.nekiplay.neopathfinder.pathfinder.util.BlockUtil.INSTANCE.canWalkBetween(ctx, start, end)
+                        && com.nekiplay.neopathfinder.pathfinder.util.BlockUtil.INSTANCE.canWalkStraight(ctx, start, end)) {
                     // Skip A* when the entire segment is directly traversable.
                     directWalk = true;
                     finder = null;
@@ -282,6 +290,22 @@ public final class PathManager {
                     searchMs = (System.nanoTime() - searchStartNs) / 1_000_000.0;
                     searchTelemetry = finder.getLastTelemetry();
                     Logger.sendLog("done pathfinding");
+                }
+                if (path != null && !start.equals(standingCell)) {
+                    // The search started one cell away (the player had to step out of an obstacle),
+                    // so keep the real starting cell as the first node of the executed path.
+                    path.prependStart(standingCell);
+                }
+                if (path != null) {
+                    List<BlockPos> smoothedPath = path.getSmoothedPath();
+                    String violation = com.nekiplay.neopathfinder.pathfinder.util.BlockUtil.INSTANCE.pathViolation(ctx, smoothedPath, true);
+                    if (violation == null) {
+                        violation = com.nekiplay.neopathfinder.pathfinder.util.BlockUtil.INSTANCE.pathViolation(ctx, path.getPath(), true);
+                    }
+                    if (violation != null) {
+                        Logger.sendLog("path rejected: " + violation);
+                        path = null;
+                    }
                 }
                 if (path != null) {
                     List<BlockPos> smoothedPath = path.getSmoothedPath();

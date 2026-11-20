@@ -22,6 +22,10 @@ class CalculationContext(sprintFactor: Double = 0.13, walkFactor: Double = 0.1, 
     val world: ClientLevel = playerContext.world ?: throw IllegalStateException("World not available")
     val player = playerContext.player ?: throw IllegalStateException("Player not available")
     val bsa = BlockStateAccessor(world)
+
+    /** Player feet position captured when the search starts, used to validate the first move. */
+    @JvmField
+    val startFeet = player.position()
     val jumpBoostAmplifier = player.getEffect(MobEffects.JUMP_BOOST)?.amplifier ?: -1
     val cost = ActionCosts(sprintFactor, walkFactor, sneakFactor, jumpBoostAmplifier)
     val maxFallHeight = if (ignoreFallDamageInPathfinding) {

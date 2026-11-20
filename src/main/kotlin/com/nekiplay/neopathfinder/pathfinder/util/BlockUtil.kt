@@ -364,6 +364,40 @@ object BlockUtil {
         return isStraightLineClear(ctx, Vec3.atCenterOf(start), Vec3.atCenterOf(end), startSurface, endSurface)
     }
 
+    /**
+     * Returns a description of the first invalid node or segment of [nodes], or null when the whole
+     * path is physically walkable. A path must never route through a fence, wall or door.
+     */
+    fun pathViolation(ctx: CalculationContext, nodes: List<BlockPos>, skipFirstNode: Boolean = false): String? {
+        for (i in nodes.indices) {
+            val pos = nodes[i]
+            if (i == 0 && skipFirstNode) {
+                continue
+            }
+            val feetState = ctx.get(pos.x, pos.y + 1, pos.z)
+            if (!MovementHelper.canWalkThrough(ctx.bsa, pos.x, pos.y + 1, pos.z, feetState)) {
+                return "node $i $pos has blocked feet space ($feetState)"
+            }
+            val headState = ctx.get(pos.x, pos.y + 2, pos.z)
+            if (!MovementHelper.canWalkThrough(ctx.bsa, pos.x, pos.y + 2, pos.z, headState)) {
+                return "node $i $pos has blocked head space ($headState)"
+            }
+            if (i == 0) {
+                continue
+            }
+            val prev = nodes[i - 1]
+            if (prev.y != pos.y) {
+                continue
+            }
+            val dx = abs(prev.x - pos.x)
+            val dz = abs(prev.z - pos.z)
+            if (maxOf(dx, dz) > 1 && !canWalkStraight(ctx, prev, pos)) {
+                return "segment $i $prev -> $pos crosses an obstacle"
+            }
+        }
+        return null
+    }
+
     private fun walkSurfaceY(ctx: CalculationContext, x: Int, y: Int, z: Int): Double {
         val surface = y + 1.0
         val coverPos = BlockPos(x, y + 1, z)
@@ -404,41 +438,92 @@ object BlockUtil {
             val surface = fromSurface + (toSurface - fromSurface) * t
             val cx = from.x + dx * t
             val cz = from.z + dz * t
-            if (!isBodyClearAt(ctx, cx, cz, surface)) return false
-            if (!isBodyClearAt(ctx, cx + perpX, cz + perpZ, surface)) return false
-            if (!isBodyClearAt(ctx, cx - perpX, cz - perpZ, surface)) return false
+            if (!isBodyClear(ctx, cx, cz, surface)) return false
+            if (!isBodyClear(ctx, cx + perpX, cz + perpZ, surface)) return false
+            if (!isBodyClear(ctx, cx - perpX, cz - perpZ, surface)) return false
         }
         return true
     }
 
-    private fun isBodyClearAt(ctx: CalculationContext, x: Double, z: Double, surfaceY: Double): Boolean {
-        val bx = Mth.floor(x)
-        val bz = Mth.floor(z)
-        val feetY = Mth.floor(surfaceY + SURFACE_EPSILON).toInt()
-        val feetPos = BlockPos(bx, feetY, bz)
-        val feetTop = try {
-            MovementHelper.collisionMaxY(ctx.get(bx, feetY, bz), ctx.world, feetPos)
+    /**
+     * Vanilla-exact collision test: the player AABB, placed with its feet at [surfaceY] on the
+     * column [x], [z], must not intersect any block collision shape. A fence post is only a quarter
+     * of a block wide, so "is this cell blocked" cannot answer whether the body fits - the real
+     * shapes can, and they also tell a fence slab crossed from a fence slab merely stood next to.
+     */
+    private fun isBodyClear(ctx: CalculationContext, x: Double, z: Double, surfaceY: Double): Boolean {
+        val player = ctx.player
+        val box = player.boundingBox.move(
+            x - player.x,
+            surfaceY + SURFACE_EPSILON - player.y,
+            z - player.z
+        )
+        val collisions = try {
+            ctx.world.getBlockCollisions(player, box)
         } catch (e: Exception) {
             return false
         }
-        if (feetTop > MovementHelper.stepHeight()) {
-            return false
-        }
-        for (offset in 1..2) {
-            val y = feetY + offset
-            val state = ctx.get(bx, y, bz)
-            val shape = try {
-                state.getCollisionShape(ctx.world, BlockPos(bx, y, bz))
-            } catch (e: Exception) {
-                return false
-            }
-            if (!shape.isEmpty) {
-                return false
-            }
-        }
-        return true
+        return !collisions.iterator().hasNext()
     }
 
+    /**
+     * Straight corridor test that starts from the player's exact position instead of a node centre.
+     * A player standing flush against a fence has its position inside the fence cell, but the cell
+     * itself is not an obstacle for leaving it - only the thin fence shape is.
+     */
+    fun canWalkStraight(ctx: CalculationContext, from: Vec3, fromFeetY: Double, to: BlockPos): Boolean {
+        val targetSurface = walkSurfaceY(ctx, to.x, to.y, to.z)
+        if (abs(targetSurface - fromFeetY) > MovementHelper.stepHeight()) {
+            return false
+        }
+        return isStraightLineClear(ctx, from, Vec3.atCenterOf(to), fromFeetY, targetSurface)
+    }
+
+    /** True when the feet space of the given cell is occupied, so the player may be embedded in it. */
+    fun isStandingCellBlocked(ctx: CalculationContext, standing: BlockPos): Boolean {
+        return !MovementHelper.canWalkThrough(ctx.bsa, standing.x, standing.y + 1, standing.z, ctx.get(standing.x, standing.y + 1, standing.z))
+    }
+
+    /**
+     * The player can stand inside a fence cell because the post occupies only 0.25x0.25 of it, but
+     * such a cell must never be a path node. Returns the walkable cell that holds most of the
+     * player's body, so the search starts from where there is actually room (stepping back out of
+     * the fence), or null when the standing cell is already walkable.
+     */
+    fun escapeStartCell(ctx: CalculationContext, standing: BlockPos): BlockPos? {
+        if (MovementHelper.canWalkThrough(ctx.bsa, standing.x, standing.y + 1, standing.z, ctx.get(standing.x, standing.y + 1, standing.z))) {
+            return null
+        }
+        val box = ctx.player.boundingBox
+        var best: BlockPos? = null
+        var bestOverlap = 0.0
+        for (dx in -1..1) {
+            for (dz in -1..1) {
+                if (dx == 0 && dz == 0) {
+                    continue
+                }
+                val candidate = BlockPos(standing.x + dx, standing.y, standing.z + dz)
+                if (!MovementHelper.canStandOn(ctx.bsa, candidate.x, candidate.y, candidate.z, ctx.get(candidate.x, candidate.y, candidate.z))) {
+                    continue
+                }
+                if (!MovementHelper.canWalkThrough(ctx.bsa, candidate.x, candidate.y + 1, candidate.z, ctx.get(candidate.x, candidate.y + 1, candidate.z))) {
+                    continue
+                }
+                val overlapX = minOf(box.maxX, candidate.x + 1.0) - maxOf(box.minX, candidate.x.toDouble())
+                val overlapZ = minOf(box.maxZ, candidate.z + 1.0) - maxOf(box.minZ, candidate.z.toDouble())
+                if (overlapX <= 0.0 || overlapZ <= 0.0) {
+                    continue
+                }
+                val overlap = overlapX * overlapZ
+                if (overlap <= bestOverlap) {
+                    continue
+                }
+                bestOverlap = overlap
+                best = candidate
+            }
+        }
+        return best
+    }
 
     fun canStandOn(pos: BlockPos): Boolean {
         val worldInstance = world ?: return false
