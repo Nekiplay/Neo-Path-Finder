@@ -1,0 +1,12 @@
+{
+  "package": "me.grish.neopathfinder.mixin",
+  "refmap": "mixins.neopathfinder.refmap.json",
+  "minVersion": "0.8",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [],
+  "client": [
+    "client.KeyBindingAccessor",
+    "client.MixinClientPlayerEntity",
+    "client.MixinLivingEntity"
+  ]
+}

@@ -1,0 +1,19 @@
+[
+  {
+    "modid": "neopathfinder",
+    "name": "NeoPathfinder",
+    "description": "Vanilla-exact pathfinder for Minecraft 26.2.",
+    "version": "${version}",
+    "mcversion": "${mcversion}",
+    "url": "https://github.com/GrishMahat/NeoPathfinder",
+    "updateUrl": "",
+    "authorList": [
+      "GrishMahat",
+      "ItsNory"
+    ],
+    "credits": "GrishMahat, ItsNory",
+    "logoFile": "assets/neopathfinder/logo.svg",
+    "screenshots": [],
+    "dependencies": []
+  }
+]

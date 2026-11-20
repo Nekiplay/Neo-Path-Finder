@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "id": "${modid}",
+  "version": "${version}",
+  "name": "${modName}",
+  "description": "NeoPathfinder - vanilla-exact pathfinder for Minecraft 26.2 (built by GrishMahat/NorySight/ItNory)",
+  "authors": [
+    "GrishMahat",
+    "NorySight",
+    "ItNory"
+  ],
+  "contact": {},
+  "license": "All Rights Reserved",
+  "icon": "assets/neopathfinder/icon.png",
+  "environment": "client",
+  "accessWidener": "neopathfinder.accesswidener",
+  "entrypoints": {
+    "client": [
+      "me.grish.neopathfinder.NeoPathfinderClient"
+    ]
+  },
+  "mixins": [
+    "mixins.${modid}.json"
+  ],
+  "depends": {
+    "fabricloader": ">=${loaderVersion}",
+    "minecraft": "~${mcversion}",
+    "java": ">=25",
+    "fabric-api": "*",
+    "fabric-language-kotlin": ">=1.13.1"
+  }
+}
