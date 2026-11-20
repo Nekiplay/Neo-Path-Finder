@@ -33,7 +33,6 @@ public class PathExecutor {
     private static final double ROTATION_HUMAN_ERROR_FACTOR = 1.2;
     private static final double COLLISION_CHECK_DISTANCE = 0.7;
     private static final int SEGMENT_TIMEOUT_MS = 30000; // 30 seconds per path segment
-    private static final double STEP_UP_NO_JUMP_RISE = 0.6;
     private static final double MIN_FORWARD_RISE = -0.05;
     private static final double MAX_JUMPABLE_RISE = 1.25;
     private static final double MAX_JUMP_PROBE_DISTANCE = 2.2;
@@ -538,7 +537,9 @@ public class PathExecutor {
         if (bestRise == Double.POSITIVE_INFINITY) {
             return false;
         }
-        return bestRise > STEP_UP_NO_JUMP_RISE;
+        // Compare against the live step allowance instead of a fixed number: anything the player
+        // can step onto in vanilla (snow layers, carpets, ...) must not schedule a jump here.
+        return bestRise > MovementHelper.INSTANCE.stepHeight();
     }
 
     private boolean isStandableWithHeadroom(CalculationContext ctx, int x, int y, int z) {

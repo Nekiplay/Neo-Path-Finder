@@ -1,11 +1,14 @@
 package com.nekiplay.neopathfinder.util;
 
+import com.nekiplay.neopathfinder.pathfinder.movement.MovementHelper;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.projectile.FishingHook;
 import net.minecraft.world.entity.projectile.hurtingprojectile.LargeFireball;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
@@ -18,12 +21,36 @@ public class PlayerUtil {
 
     private static final Minecraft mc = Minecraft.getInstance();
 
-    // requires more testing
+    /** Offset keeping a feet position exactly on a surface inside that surface's block. */
+    private static final double SURFACE_EPSILON = 1.0E-3;
+    /** Safety bound while stepping down through empty-but-colliding covers. */
+    private static final int MAX_COVER_LAYERS = 4;
+    /**
+     * Block the player is effectively standing on. Thin covers that vanilla walks over without a
+     * jump (snow layers, carpets, ...) are skipped: their collision top is compared against the
+     * live step height, so the returned node is the real supporting block. No elevation numbers
+     * are hardcoded here.
+     */
     public static BlockPos getBlockStandingOn() {
-        // 0.25 = 3 layers of snow
-        // if there is more than 3 layers of snow then i should consider that as a full block i guess
-        // but there is no snow check in pathfinder so this will probably not work at all in snowy areas
-        return BlockPos.containing(mc.player.getX(), Math.ceil(mc.player.getY() - 0.25) - 1, mc.player.getZ());
+        Vec3 pos = mc.player.position();
+        int x = Mth.floor(pos.x);
+        int z = Mth.floor(pos.z);
+        int y = Mth.floor(pos.y - SURFACE_EPSILON);
+
+        double stepHeight = MovementHelper.INSTANCE.stepHeight();
+        for (int i = 0; i < MAX_COVER_LAYERS; i++) {
+            BlockPos candidate = new BlockPos(x, y, z);
+            BlockState state = mc.level.getBlockState(candidate);
+            if (state.isAir()) {
+                break;
+            }
+            double coverTop = MovementHelper.INSTANCE.collisionMaxY(state, mc.level, candidate);
+            if (coverTop <= 0.0 || coverTop > stepHeight) {
+                break;
+            }
+            y--;
+        }
+        return new BlockPos(x, y, z);
     }
 
     public static Vec3 getPlayerEyePos() {

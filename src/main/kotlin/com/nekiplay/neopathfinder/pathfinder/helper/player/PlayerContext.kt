@@ -1,8 +1,8 @@
 package com.nekiplay.neopathfinder.pathfinder.helper.player
 
+import com.nekiplay.neopathfinder.util.PlayerUtil
 import net.minecraft.client.Minecraft
 import net.minecraft.core.BlockPos
-import kotlin.math.ceil
 
 class PlayerContext(override val mc: Minecraft) : IPlayerContext {
     override val player get() = mc.player
@@ -12,7 +12,8 @@ class PlayerContext(override val mc: Minecraft) : IPlayerContext {
     // Block player is standing on
     override val playerPosition: BlockPos?
         get() {
-            val p = player ?: return null
-            return BlockPos.containing(p.x, ceil(p.y) - 1, p.z)
+            if (player == null) return null
+            // Same definition as the pathfinder uses: thin snow/carpet covers are skipped.
+            return PlayerUtil.getBlockStandingOn()
         }
 }

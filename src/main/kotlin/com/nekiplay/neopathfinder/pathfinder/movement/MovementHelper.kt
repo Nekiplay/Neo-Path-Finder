@@ -1,6 +1,7 @@
 package com.nekiplay.neopathfinder.pathfinder.movement
 
 import com.nekiplay.neopathfinder.pathfinder.helper.BlockStateAccessor
+import net.minecraft.client.Minecraft
 import net.minecraft.core.BlockPos
 import net.minecraft.core.Direction
 import net.minecraft.tags.FluidTags
@@ -11,6 +12,17 @@ import net.minecraft.world.level.block.state.properties.Half
 import net.minecraft.world.level.block.state.properties.SlabType
 
 object MovementHelper {
+
+    /**
+     * Vanilla step-up allowance of the local player (attribute `minecraft:step_height`,
+     * exposed as [net.minecraft.world.entity.Entity.maxUpStep]). Not hardcoded: read from the
+     * live player each time, so modifiers/potions are honoured. Without a player nothing may
+     * be stepped over, and partial columns stay solid for pathfinding.
+     */
+    fun stepHeight(): Double {
+        return Minecraft.getInstance().player?.maxUpStep()?.toDouble() ?: 0.0
+    }
+
 
     fun collisionMaxY(state: BlockState, world: BlockGetter, pos: BlockPos): Double {
         return try {
@@ -86,10 +98,14 @@ object MovementHelper {
             if (!bsa.isBlockInLoadedChunks(x, z)) {
                 return true
             }
-            if (state.getValue(SnowLayerBlock.LAYERS) >= 1) {
-                return false
+            // A snow layer is only an obstacle when its collision top is higher than the
+            // player can step up. Anything at or below the step height is walked over, exactly
+            // like vanilla movement does, so no jump has to be scheduled for it.
+            val layersHeight = collisionMaxY(state, bsa.world, BlockPos(x, y, z))
+            if (layersHeight <= 0.0) {
+                return canStandOn(bsa, x, y - 1, z)
             }
-            return canStandOn(bsa, x, y - 1, z)
+            return layersHeight <= stepHeight()
         }
 
         if (!state.fluidState.isEmpty) {
