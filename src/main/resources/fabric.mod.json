@@ -16,7 +16,7 @@
   "accessWidener": "neopathfinder.accesswidener",
   "entrypoints": {
     "client": [
-      "me.grish.neopathfinder.NeoPathfinderClient"
+      "com.nekiplay.neopathfinder.NeoPathfinderClient"
     ]
   },
   "mixins": [

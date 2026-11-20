@@ -6,12 +6,12 @@ and in-world path rendering.
 
 ## What is in this build
 
-- `me.grish.neopathfinder.pathfinder` — `PathManager` (request queue + search dispatch) and
+- `com.nekiplay.neopathfinder.pathfinder` — `PathManager` (request queue + search dispatch) and
   `PathExecutor` (per-tick follower: key presses, rotation easing, jump timing, stuck/timeout detection).
-- `me.grish.neopathfinder.pathfinder.calculate` — `AStarPathFinder`, `Path`/`PathNode`, `PathfindingTelemetry`.
-- `me.grish.neopathfinder.pathfinder.movement` — moves (traverse, ascend, descend, diagonal, fall) and `CalculationContext`.
-- `me.grish.neopathfinder.api.PathAPI` — public static API for other mods/scripts.
-- `me.grish.neopathfinder.command.PathCommand` — `/path` client command.
+- `com.nekiplay.neopathfinder.pathfinder.calculate` — `AStarPathFinder`, `Path`/`PathNode`, `PathfindingTelemetry`.
+- `com.nekiplay.neopathfinder.pathfinder.movement` — moves (traverse, ascend, descend, diagonal, fall) and `CalculationContext`.
+- `com.nekiplay.neopathfinder.api.PathAPI` — public static API for other mods/scripts.
+- `com.nekiplay.neopathfinder.command.PathCommand` — `/path` client command.
 - Path rendering in-world (green nodes + connecting line).
 
 Everything else from the original NeoPathfinder (mining/commission/fishing macros, route miner,
@@ -32,7 +32,7 @@ config GUI, HUD, failsafes, macro recorder, route graph, tablist/scoreboard mirr
 ## API (all static)
 
 ```java
-import me.grish.neopathfinder.api.PathAPI;
+import com.nekiplay.neopathfinder.api.PathAPI;
 
 // single destination
 PathAPI.goTo(new BlockPos(100, 70, -20));
@@ -69,7 +69,7 @@ gradlew build
 
 ## Known limitations
 
-- Physics/move costs in `src/main/kotlin/me/grish/neopathfinder/pathfinder/costs/ActionCost.kt`
+- Physics/move costs in `src/main/kotlin/com/nekiplay/neopathfinder/pathfinder/costs/ActionCost.kt`
   still contain literal constants (`0.08`, `0.98`, `0.91`, ...). Per `AGENTS.md` these are
   `TODO(extract)` items — they should be read from the 26.2 runtime instead of hardcoded.
 - The oracle tests required by `AGENTS.md` §6 are not part of this build yet.

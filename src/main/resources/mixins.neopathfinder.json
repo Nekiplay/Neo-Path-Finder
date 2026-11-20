@@ -1,5 +1,5 @@
 {
-  "package": "me.grish.neopathfinder.mixin",
+  "package": "com.nekiplay.neopathfinder.mixin",
   "refmap": "mixins.neopathfinder.refmap.json",
   "minVersion": "0.8",
   "compatibilityLevel": "JAVA_21",
