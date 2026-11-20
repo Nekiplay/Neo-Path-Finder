@@ -36,6 +36,8 @@ public final class PathManager {
     private static final Minecraft mc = Minecraft.getInstance();
     /** Cells around the goal accepted when the exact cell is unreachable. */
     private static final int GOAL_TOLERANCE = 2;
+    /** Replans of one segment allowed before the run is failed instead of looping forever. */
+    private static final int MAX_REPLANS_PER_SEGMENT = 6;
     private static PathManager instance;
 
     private final Deque<Pair<BlockPos, BlockPos>> pathQueue = new ConcurrentLinkedDeque<>();
@@ -50,6 +52,9 @@ public final class PathManager {
     private boolean failed = false;
     private boolean succeeded = false;
     private volatile PathfindingTelemetry lastTelemetry = null;
+    private int replanAttempts = 0;
+    /** Destination of the segment currently being planned or walked; used to replan it in place. */
+    private volatile BlockPos currentSegmentEnd = null;
 
     private PathManager() {
     }
@@ -149,6 +154,8 @@ public final class PathManager {
         this.enabled = true;
         this.succeeded = false;
         this.failed = false;
+        this.replanAttempts = 0;
+        this.currentSegmentEnd = null;
         this.pathExecutor.start();
         Logger.sendMessage("[Pathfinder] Started");
     }
@@ -202,6 +209,31 @@ public final class PathManager {
         }
     }
 
+    /**
+     * Drops the segment being walked and plans it again from where the player actually is. Raised by
+     * the executor when it spends seconds alternating between two moves instead of getting anywhere;
+     * after a fall or a push into a fence the fresh plan simply routes around the new position.
+     */
+    private void replanCurrentSegment() {
+        BlockPos segmentEnd = this.currentSegmentEnd;
+        if (segmentEnd == null) {
+            this.stop("Replan requested without a goal");
+            return;
+        }
+        if (++this.replanAttempts > MAX_REPLANS_PER_SEGMENT) {
+            this.failed = true;
+            this.stop("Gave up after " + MAX_REPLANS_PER_SEGMENT + " replans of one segment");
+            return;
+        }
+        BlockPos liveStart = PlayerUtil.getPathStartPos();
+        BlockPos destination = segmentEnd;
+        Logger.sendLog("No progress near " + liveStart + ", replanning segment to " + destination
+                + " (attempt " + this.replanAttempts + "/" + MAX_REPLANS_PER_SEGMENT + ")");
+        this.pathExecutor.stop();
+        this.pathExecutor.start();
+        this.pathQueue.addFirst(new Pair<>(liveStart, destination));
+    }
+
     private void stopOnClientThread(String reason) {
         String stopReason = (reason == null || reason.trim().isEmpty()) ? "No explicit reason" : reason.trim();
         if (mc.isSameThread()) {
@@ -229,6 +261,8 @@ public final class PathManager {
             return;
         }
 
+        PlayerUtil.tickGroundedPos();
+
         boolean okToPath = this.pathExecutor.onTick();
 
         // let the executor consume the freshly queued path
@@ -246,6 +280,11 @@ public final class PathManager {
         }
 
         if (!okToPath) {
+            return;
+        }
+
+        if (this.pathExecutor.takeReplanRequest()) {
+            this.replanCurrentSegment();
             return;
         }
 
@@ -284,12 +323,13 @@ public final class PathManager {
                 // destination (one cell of drift is normal). Planning from the stale chained start
                 // builds a path that begins behind the player, and steering at it walks into walls.
                 BlockPos requestedStart = startEnd.getFirst();
-                BlockPos liveStart = PlayerUtil.getBlockStandingOn();
+                BlockPos liveStart = PlayerUtil.getPathStartPos();
                 if (!liveStart.equals(requestedStart)) {
                     Logger.sendLog("Chained segment requested from " + requestedStart + ", replanning from " + liveStart);
                 }
                 BlockPos start = liveStart;
                 BlockPos end = startEnd.getSecond();
+                this.currentSegmentEnd = end;
                 Logger.sendLog("planning segment " + start + " -> " + end + " (" + this.pathQueue.size() + " more queued)");
                 double walkSpeed = mc.player.getSpeed();
                 CalculationContext ctx = new CalculationContext(walkSpeed * 1.3, walkSpeed, walkSpeed * 0.3);
@@ -370,6 +410,8 @@ public final class PathManager {
                             smoothedPath.size(),
                             directWalk
                     );
+                    // A freshly planned segment gets its own replan budget.
+                    this.replanAttempts = 0;
                     PathExecutor.getInstance().queuePath(path);
                 } else {
                     Logger.sendLog("No Path Found");

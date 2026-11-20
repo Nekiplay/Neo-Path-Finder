@@ -23,6 +23,7 @@ import net.minecraft.world.phys.Vec3;
 import java.awt.*;
 import java.util.*;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class PathExecutor {
 
@@ -47,6 +48,19 @@ public class PathExecutor {
     private static final double MAX_SEGMENT_DRIFT_HORIZONTAL = 2.5;
     private static final int MAX_SEGMENT_DRIFT_VERTICAL = 2;
     private static final int STUCK_RECOVERY_TIMEOUT_MS = 700;
+    /**
+     * Ticks allowed inside a small area before the segment is planned again. Back-and-forth pacing
+     * covers more than a tick's worth of distance, so the anchor is only moved by real progress.
+     */
+    private static final int NO_PROGRESS_TICKS_BEFORE_REPLAN = 50;
+    /** Net displacement that counts as real progress; pacing in place never leaves this radius. */
+    private static final double PROGRESS_RADIUS = 1.5;
+    /** Falling this far below the next node means the rest of the path is stale. */
+    private static final double FALL_OFF_PATH_DISTANCE = 1.6;
+    /** How long the chosen steering node is kept, which stops the follower flipping between two. */
+    private static final int STEERING_HOLD_TICKS = 5;
+    /** How long a step back stays engaged once it starts. */
+    private static final int RETREAT_HOLD_TICKS = 15;
     private static PathExecutor instance;
     private final Minecraft mc = Minecraft.getInstance();
     @Getter
@@ -77,6 +91,11 @@ public class PathExecutor {
     private int target = 0;
     private int moveTargetIndex = -1;
     private int retreatIndex = -1;
+    private int steeringHoldTicks = 0;
+    private int retreatHoldTicks = 0;
+    private Vec3 progressSample = null;
+    private int noProgressTicks = 0;
+    private final AtomicBoolean replanRequested = new AtomicBoolean();
     private int previous = -1;
     private long nodeChangeTime = 0;
 
@@ -157,6 +176,13 @@ public class PathExecutor {
         // A stale failure flag from a previous run turns every later stop() into a "failed" stop.
         this.failed = false;
         this.succeeded = false;
+        this.replanRequested.set(false);
+        this.progressSample = null;
+        this.noProgressTicks = 0;
+        this.steeringHoldTicks = 0;
+        this.retreatHoldTicks = 0;
+        this.moveTargetIndex = -1;
+        this.retreatIndex = -1;
     }
 
     public void stop() {
@@ -383,6 +409,28 @@ public class PathExecutor {
             log("reached final node, segment complete");
         }
 
+        // Two moves alternating for seconds still covers distance every tick, so progress is measured
+        // as the net displacement from an anchor that only moves when the player really gets
+        // somewhere. A fresh plan from here also gets the run going again after being pushed into a
+        // fence, stuck on a step it cannot climb, or after falling off the route.
+        Vec3 nowPos = mc.player.position();
+        boolean fellOffPath = this.target < this.blockPath.size()
+                && nowPos.y < this.blockPath.get(this.target).getY() - FALL_OFF_PATH_DISTANCE;
+        if (this.progressSample == null || nowPos.distanceTo(this.progressSample) > PROGRESS_RADIUS) {
+            this.progressSample = nowPos;
+            this.noProgressTicks = 0;
+        } else if (fellOffPath || ++this.noProgressTicks >= NO_PROGRESS_TICKS_BEFORE_REPLAN) {
+            this.noProgressTicks = 0;
+            this.progressSample = nowPos;
+            this.steeringHoldTicks = 0;
+            this.retreatHoldTicks = 0;
+            this.retreatIndex = -1;
+            this.moveTargetIndex = -1;
+            log((fellOffPath ? "Dropped below the path at " + nowPos.y + ", " : "No progress, ")
+                    + "asking for a fresh plan from here");
+            this.replanRequested.set(true);
+        }
+
         boolean onGround = mc.player.onGround();
 
         // Only steer at a node the player can actually walk to in a straight line; otherwise aim at
@@ -391,19 +439,29 @@ public class PathExecutor {
         CalculationContext ctx = this.curr.getCtx();
         Vec3 playerFeet = mc.player.position();
         int chosenIndex = Math.min(this.target, this.blockPath.size() - 1);
-        int lookaheadEnd = Math.min(this.target + TARGET_LOOKAHEAD, this.blockPath.size() - 1);
-        for (int i = lookaheadEnd; i > this.target; i--) {
-            BlockPos candidate = this.blockPath.get(i);
-            if (BlockUtil.INSTANCE.canWalkStraight(ctx, playerFeet, playerFeet.y, candidate)) {
-                chosenIndex = i;
-                break;
+        boolean previousChoiceUsable = this.moveTargetIndex > this.target
+                && this.moveTargetIndex < this.blockPath.size()
+                && BlockUtil.INSTANCE.canWalkStraight(ctx, playerFeet, playerFeet.y, this.blockPath.get(this.moveTargetIndex));
+        if (this.steeringHoldTicks > 0) {
+            // Re-evaluating the lookahead every tick made the follower alternate between two equally
+            // valid nodes, which produced seconds of left/back shuffling at a fixed rhythm.
+            this.steeringHoldTicks--;
+            if (previousChoiceUsable) {
+                chosenIndex = this.moveTargetIndex;
             }
-        }
-        // Keep the previous choice while it stays visible, otherwise the follower oscillates between
-        // two equally valid lookahead nodes.
-        if (this.moveTargetIndex > this.target && this.moveTargetIndex < this.blockPath.size()
-                && BlockUtil.INSTANCE.canWalkStraight(ctx, playerFeet, playerFeet.y, this.blockPath.get(this.moveTargetIndex))) {
-            chosenIndex = this.moveTargetIndex;
+        } else {
+            int lookaheadEnd = Math.min(this.target + TARGET_LOOKAHEAD, this.blockPath.size() - 1);
+            for (int i = lookaheadEnd; i > this.target; i--) {
+                BlockPos candidate = this.blockPath.get(i);
+                if (BlockUtil.INSTANCE.canWalkStraight(ctx, playerFeet, playerFeet.y, candidate)) {
+                    chosenIndex = i;
+                    break;
+                }
+            }
+            if (previousChoiceUsable) {
+                chosenIndex = this.moveTargetIndex;
+            }
+            this.steeringHoldTicks = STEERING_HOLD_TICKS;
         }
         if (this.target >= this.blockPath.size()) {
             chosenIndex = this.blockPath.size() - 1;
@@ -414,7 +472,15 @@ public class PathExecutor {
         // post, a wall corner) and therefore sees no direct line to the next node. Standing next to
         // one must never trigger it.
         boolean embedded = BlockUtil.INSTANCE.isStandingCellBlocked(ctx, PlayerUtil.getBlockStandingOn());
-        if (embedded && chosenIndex == this.target && !BlockUtil.INSTANCE.canWalkStraight(ctx, playerFeet, playerFeet.y, target)) {
+        // Hold the step back for a moment so it cannot be re-decided on every tick, which is the other
+        // way this follower used to shuffle back and forth in place.
+        if (this.retreatHoldTicks > 0) {
+            this.retreatHoldTicks--;
+        } else if (!embedded) {
+            this.retreatIndex = -1;
+        }
+        boolean retreatActive = embedded || this.retreatHoldTicks > 0 || this.retreatIndex >= 0;
+        if (retreatActive && chosenIndex == this.target && !BlockUtil.INSTANCE.canWalkStraight(ctx, playerFeet, playerFeet.y, target)) {
             // Nothing ahead is reachable in a straight line: step back into the node behind us (this
             // is the cell the path started from, e.g. after escaping a fence cell) and stay on it
             // until it is reached, so the follower does not jitter between the two.
@@ -427,6 +493,7 @@ public class PathExecutor {
                 }
             }
             if (this.retreatIndex >= 0 && this.retreatIndex < this.blockPath.size()) {
+                this.retreatHoldTicks = RETREAT_HOLD_TICKS;
                 BlockPos retreat = this.blockPath.get(this.retreatIndex);
                 double retreatDist = Math.hypot(mc.player.getX() - retreat.getX() - 0.5, mc.player.getZ() - retreat.getZ() - 0.5);
                 if (retreatDist <= NODE_REACHED_HORIZONTAL_DIST + 0.15
@@ -435,6 +502,7 @@ public class PathExecutor {
                 } else {
                     movementTarget = retreat;
                     this.moveTargetIndex = this.retreatIndex;
+                    this.retreatHoldTicks = RETREAT_HOLD_TICKS;
                 }
             }
         } else {
@@ -522,6 +590,17 @@ public class PathExecutor {
         KeyBindUtil.setKeyBindState(mc.options.keySprint, this.allowSprint && yawDiff < MAX_YAW_DIFF_FOR_SPRINT && !shouldJump && !recoveryJumping);
 
         return mc.player.position().distanceToSqr(target.getX() + 0.5, target.getY() + 0.5, target.getZ() + 0.5) < 100;
+    }
+
+    /**
+     * Consumes the pending "plan this segment again" request raised by the progress watchdog.
+     */
+    public boolean takeReplanRequest() {
+        return this.replanRequested.getAndSet(false);
+    }
+
+    public void requestReplan() {
+        this.replanRequested.set(true);
     }
 
     /**

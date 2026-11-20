@@ -39,6 +39,39 @@ public class PlayerUtil {
         return canonicalizeStandingPos(new BlockPos(x, y, z));
     }
 
+    /** Cell the player was last standing on; a jump keeps naming its takeoff cell. */
+    private static BlockPos lastGroundedPos = null;
+
+    /**
+     * Records the grounded cell once per tick, so path planning started while the player is in the
+     * air still begins on the ground instead of on the cell the jump carried him into.
+     */
+    public static void tickGroundedPos() {
+        if (mc.player == null) {
+            return;
+        }
+        if (mc.player.onGround()) {
+            lastGroundedPos = getBlockStandingOn();
+        }
+    }
+
+    /**
+     * Start cell for a search: the live standing block when grounded, otherwise the last grounded
+     * one, because planning mid-jump would treat the airborne cell as reachable standing ground and
+     * the follower would then keep trying to climb to it.
+     */
+    public static BlockPos getPathStartPos() {
+        BlockPos live = getBlockStandingOn();
+        if (mc.player == null || mc.player.onGround() || lastGroundedPos == null) {
+            return live;
+        }
+        if (Math.abs(lastGroundedPos.getY() - live.getY()) > 2) {
+            // Fell far below the takeoff cell: the ground under the player is the honest start.
+            return live;
+        }
+        return lastGroundedPos;
+    }
+
     /**
      * Moves a position down through thin covers that vanilla simply steps over (snow layers,
      * carpets, ...), so the result is the real supporting block used as a path node. The decision
