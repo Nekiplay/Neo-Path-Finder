@@ -7,6 +7,7 @@ import com.nekiplay.neopathfinder.handler.RotationHandler;
 import com.nekiplay.neopathfinder.pathfinder.calculate.Path;
 import com.nekiplay.neopathfinder.pathfinder.movement.CalculationContext;
 import com.nekiplay.neopathfinder.pathfinder.movement.MovementHelper;
+import com.nekiplay.neopathfinder.pathfinder.util.BlockUtil;
 import com.nekiplay.neopathfinder.util.*;
 import com.nekiplay.neopathfinder.util.helper.Angle;
 import com.nekiplay.neopathfinder.util.helper.Clock;
@@ -41,6 +42,7 @@ public class PathExecutor {
     private static final double SEGMENT_PROGRESS_SWITCH_THRESHOLD = 0.65;
     private static final double STUCK_SPEED_THRESHOLD = 0.05;
     private static final int STUCK_DETECTION_MS = 1000;
+    private static final int TARGET_LOOKAHEAD = 3;
     private static final int STUCK_RECOVERY_TIMEOUT_MS = 700;
     private static PathExecutor instance;
     private final Minecraft mc = Minecraft.getInstance();
@@ -348,8 +350,26 @@ public class PathExecutor {
 
         boolean onGround = mc.player.onGround();
 
-        int targetX = target.getX();
-        int targetZ = target.getZ();
+        // Only steer at a node the player can actually walk to in a straight line; otherwise aim at
+        // the furthest visible node ahead. Without this the follower pushes straight into fences and
+        // wall corners that the path itself goes around.
+        CalculationContext ctx = this.curr.getCtx();
+        BlockPos standingPos = PlayerUtil.getBlockStandingOn();
+        BlockPos movementTarget = target;
+        int lookaheadEnd = Math.min(this.target + TARGET_LOOKAHEAD, this.blockPath.size() - 1);
+        for (int i = lookaheadEnd; i > this.target; i--) {
+            BlockPos candidate = this.blockPath.get(i);
+            if (BlockUtil.INSTANCE.canWalkStraight(ctx, standingPos, candidate)) {
+                movementTarget = candidate;
+                break;
+            }
+        }
+        if (movementTarget == target && !BlockUtil.INSTANCE.canWalkStraight(ctx, standingPos, target)) {
+            log("target " + target + " is not directly reachable, keeping straight approach suppressed");
+        }
+
+        int targetX = movementTarget.getX();
+        int targetZ = movementTarget.getZ();
         double horizontalDistToTarget = Math.hypot(mc.player.getX() - targetX - 0.5, mc.player.getZ() - targetZ - 0.5);
         float yaw = AngleUtil.getRotationYaw360(mc.player.position(), new Vec3(targetX + 0.5, 0.0, targetZ + 0.5));
         float yawDiff = Math.abs(AngleUtil.get360RotationYaw() - yaw);
@@ -406,7 +426,7 @@ public class PathExecutor {
         }
 
         // Jump only when path requires a one-block step-up and landing space is valid.
-        boolean shouldJump = shouldJumpOneBlock(playerPos, target, horizontalDistToTarget);
+        boolean shouldJump = shouldJumpOneBlock(playerPos, movementTarget, horizontalDistToTarget);
         boolean recoveryJumping = false;
         if (shouldJump && onGround && (!this.jumpDelay.isScheduled() || this.jumpDelay.passed())) {
             keyBindings.add(mc.options.keyJump);
