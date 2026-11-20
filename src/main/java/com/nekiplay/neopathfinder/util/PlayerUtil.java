@@ -36,7 +36,22 @@ public class PlayerUtil {
         int x = Mth.floor(pos.x);
         int z = Mth.floor(pos.z);
         int y = Mth.floor(pos.y - SURFACE_EPSILON);
+        return canonicalizeStandingPos(new BlockPos(x, y, z));
+    }
 
+    /**
+     * Moves a position down through thin covers that vanilla simply steps over (snow layers,
+     * carpets, ...), so the result is the real supporting block used as a path node. The decision
+     * is made from each block's collision top vs. the live step height, never from block ids or
+     * hardcoded elevations.
+     */
+    public static BlockPos canonicalizeStandingPos(BlockPos pos) {
+        if (mc.level == null) {
+            return pos;
+        }
+        int x = pos.getX();
+        int z = pos.getZ();
+        int y = pos.getY();
         double stepHeight = MovementHelper.INSTANCE.stepHeight();
         for (int i = 0; i < MAX_COVER_LAYERS; i++) {
             BlockPos candidate = new BlockPos(x, y, z);

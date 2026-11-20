@@ -554,7 +554,16 @@ public class PathExecutor {
 
     private double getSurfaceY(CalculationContext ctx, int x, int y, int z, int stepX, int stepZ) {
         BlockState state = ctx.get(x, y, z);
-        return y + getSurfaceOffset(ctx, state, x, y, z, stepX, stepZ);
+        double surface = y + getSurfaceOffset(ctx, state, x, y, z, stepX, stepZ);
+        // Add the height of a cover the player steps over without jumping (snow layer, carpet, ...).
+        // Without it the rise of such a step is overestimated and the follower schedules a jump.
+        BlockPos coverPos = new BlockPos(x, y + 1, z);
+        BlockState coverState = ctx.get(x, y + 1, z);
+        double coverTop = MovementHelper.INSTANCE.collisionMaxY(coverState, ctx.getWorld(), coverPos);
+        if (coverTop > 0.0 && coverTop <= MovementHelper.INSTANCE.stepHeight()) {
+            surface = Math.max(surface, y + 1 + coverTop);
+        }
+        return surface;
     }
 
     private double getSurfaceOffset(CalculationContext ctx, BlockState state, int x, int y, int z, int stepX, int stepZ) {

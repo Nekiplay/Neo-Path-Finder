@@ -78,7 +78,10 @@ public final class PathManager {
         } else {
             start = this.pathQueue.peekLast().getSecond();
         }
-        this.pathQueue.offer(new Pair<>(start, end));
+        // Canonicalize the destination the same way start nodes are built: a goal placed on top of
+        // a snow layer must resolve to the supporting block, otherwise the path ends one block
+        // higher and the follower treats the last step as a jump.
+        this.pathQueue.offer(new Pair<>(start, PlayerUtil.canonicalizeStandingPos(end)));
     }
 
     public void queue(BlockPos start, BlockPos end) {
