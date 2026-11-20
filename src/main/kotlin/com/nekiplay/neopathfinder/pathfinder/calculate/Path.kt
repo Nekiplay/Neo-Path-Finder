@@ -45,7 +45,7 @@ class Path(start: PathNode, end: PathNode, val goal: Goal, val ctx: CalculationC
                 var nextPos = currPoint + 1
 
                 for (i in (path.size - 1) downTo nextPos) {
-                    if (BlockUtil.bresenham(ctx, path[currPoint], path[i])) {
+                    if (BlockUtil.canWalkStraight(ctx, path[currPoint], path[i])) {
                         nextPos = i
                         break
                     }
@@ -77,7 +77,7 @@ class Path(start: PathNode, end: PathNode, val goal: Goal, val ctx: CalculationC
                 var nextPos = currPoint + 1
 
                 for (i in (path.size - 1) downTo nextPos) {
-                    if (BlockUtil.bresenham(ctx, path[currPoint].toVec3(), path[i].toVec3())) {
+                    if (BlockUtil.canWalkStraight(ctx, path[currPoint], path[i])) {
                         nextPos = i
                         break
                     }

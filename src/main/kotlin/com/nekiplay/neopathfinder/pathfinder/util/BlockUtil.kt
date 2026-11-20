@@ -13,8 +13,13 @@ import net.minecraft.world.level.block.state.BlockState
 import net.minecraft.world.level.block.state.properties.Half
 import net.minecraft.world.phys.Vec3
 import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.sqrt
 
 object BlockUtil {
+    private const val SURFACE_EPSILON = 1.0E-3
+    private const val CORRIDOR_SAMPLE_STEP = 0.2
+
     fun canWalkOnBlock(pos: BlockPos): Boolean {
         val state = world?.getBlockState(pos) ?: return false
         val worldInstance = world ?: return false
@@ -345,6 +350,95 @@ object BlockUtil {
         }
         return bresenham(ctx, start, end)
     }
+
+    /**
+     * Collision-exact test for a straight smoothed segment: the player body must fit everywhere
+     * along the line, so fences, walls, panes, doors and other tall obstacles are never crossed.
+     */
+    fun canWalkStraight(ctx: CalculationContext, start: BlockPos, end: BlockPos): Boolean {
+        val startSurface = walkSurfaceY(ctx, start.x, start.y, start.z)
+        val endSurface = walkSurfaceY(ctx, end.x, end.y, end.z)
+        if (abs(endSurface - startSurface) > MovementHelper.stepHeight()) {
+            return false
+        }
+        return isStraightLineClear(ctx, Vec3.atCenterOf(start), Vec3.atCenterOf(end), startSurface, endSurface)
+    }
+
+    private fun walkSurfaceY(ctx: CalculationContext, x: Int, y: Int, z: Int): Double {
+        val surface = y + 1.0
+        val coverPos = BlockPos(x, y + 1, z)
+        val coverTop = try {
+            MovementHelper.collisionMaxY(ctx.get(x, y + 1, z), ctx.world, coverPos)
+        } catch (e: Exception) {
+            return surface
+        }
+        if (coverTop > 0.0 && coverTop <= MovementHelper.stepHeight()) {
+            return maxOf(surface, y + 1 + coverTop)
+        }
+        return surface
+    }
+
+    private fun isStraightLineClear(
+        ctx: CalculationContext,
+        from: Vec3,
+        to: Vec3,
+        fromSurface: Double,
+        toSurface: Double
+    ): Boolean {
+        val dx = to.x - from.x
+        val dz = to.z - from.z
+        val length = sqrt(dx * dx + dz * dz)
+        val halfWidth = ctx.player.bbWidth / 2.0
+        val perpX: Double
+        val perpZ: Double
+        if (length < 1.0E-6) {
+            perpX = 0.0
+            perpZ = 0.0
+        } else {
+            perpX = -dz / length * halfWidth
+            perpZ = dx / length * halfWidth
+        }
+        val samples = maxOf(1, ceil(length / CORRIDOR_SAMPLE_STEP).toInt())
+        for (i in 0..samples) {
+            val t = i.toDouble() / samples
+            val surface = fromSurface + (toSurface - fromSurface) * t
+            val cx = from.x + dx * t
+            val cz = from.z + dz * t
+            if (!isBodyClearAt(ctx, cx, cz, surface)) return false
+            if (!isBodyClearAt(ctx, cx + perpX, cz + perpZ, surface)) return false
+            if (!isBodyClearAt(ctx, cx - perpX, cz - perpZ, surface)) return false
+        }
+        return true
+    }
+
+    private fun isBodyClearAt(ctx: CalculationContext, x: Double, z: Double, surfaceY: Double): Boolean {
+        val bx = Mth.floor(x)
+        val bz = Mth.floor(z)
+        val feetY = Mth.floor(surfaceY + SURFACE_EPSILON).toInt()
+        val feetPos = BlockPos(bx, feetY, bz)
+        val feetTop = try {
+            MovementHelper.collisionMaxY(ctx.get(bx, feetY, bz), ctx.world, feetPos)
+        } catch (e: Exception) {
+            return false
+        }
+        if (feetTop > MovementHelper.stepHeight()) {
+            return false
+        }
+        for (offset in 1..2) {
+            val y = feetY + offset
+            val state = ctx.get(bx, y, bz)
+            val shape = try {
+                state.getCollisionShape(ctx.world, BlockPos(bx, y, bz))
+            } catch (e: Exception) {
+                return false
+            }
+            if (!shape.isEmpty) {
+                return false
+            }
+        }
+        return true
+    }
+
 
     fun canStandOn(pos: BlockPos): Boolean {
         val worldInstance = world ?: return false
