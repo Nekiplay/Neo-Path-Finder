@@ -40,13 +40,16 @@ public class PathExecutor {
     private static final double MAX_JUMP_PROBE_DISTANCE = 2.2;
     private static final double NODE_REACHED_HORIZONTAL_DIST = 0.7;
     private static final double NODE_REACHED_VERTICAL_TOLERANCE = 1.35;
+    /**
+     * Radius around the final node that retires a segment. Landing beside a waypoint is normal, and
+     * demanding node-precision left the segment running so the next waypoint was never planned.
+     */
+    private static final double SEGMENT_COMPLETE_RADIUS = 2.0;
     private static final double SEGMENT_PROGRESS_SWITCH_THRESHOLD = 0.65;
     private static final double STUCK_SPEED_THRESHOLD = 0.05;
     private static final int STUCK_DETECTION_MS = 1000;
     private static final int TARGET_LOOKAHEAD = 3;
     /** A chained segment may start this far (blocks) from the previous goal and still be accepted. */
-    private static final double MAX_SEGMENT_DRIFT_HORIZONTAL = 2.5;
-    private static final int MAX_SEGMENT_DRIFT_VERTICAL = 2;
     private static final int STUCK_RECOVERY_TIMEOUT_MS = 700;
     /**
      * Ticks allowed inside a small area before the segment is planned again. Back-and-forth pacing
@@ -144,26 +147,11 @@ public class PathExecutor {
         Path lastPath = (this.curr != null) ? this.curr : this.pathQueue.peekLast();
 
         if (lastPath != null && !lastPath.getGoal().isAtGoal(start.getX(), start.getY(), start.getZ())) {
-            // Chained waypoints are planned from the player's live cell, so a different start is
-            // normal; only a segment that starts somewhere else entirely is a real error.
-            boolean acceptable = false;
-            if (lastPath.getGoal() instanceof com.nekiplay.neopathfinder.pathfinder.goal.Goal previousGoal) {
-                double driftX = start.getX() - previousGoal.getGoalX();
-                double driftZ = start.getZ() - previousGoal.getGoalZ();
-                double drift = Math.sqrt(driftX * driftX + driftZ * driftZ);
-                int driftY = Math.abs(start.getY() - previousGoal.getGoalY());
-                acceptable = drift <= MAX_SEGMENT_DRIFT_HORIZONTAL && driftY <= MAX_SEGMENT_DRIFT_VERTICAL;
-                if (acceptable) {
-                    log("Accepting segment starting " + String.format(java.util.Locale.ROOT, "%.2f", drift)
-                            + " blocks from the previous goal");
-                }
-            }
-            if (!acceptable) {
-                this.stopReason = "Rejected disjoint path segment";
-                error("This path segment does not start at last path's goal. LastpathGoal: " + lastPath.getGoal()
-                        + ", ThisPathStart: " + start);
-                return;
-            }
+            // Chained segments are planned from the player's live cell and validated against real
+            // collisions by the manager, so a start that is not the previous goal cell is expected.
+            // Rejecting it dropped the waypoint the manager had already taken off its queue.
+            log("Segment starts at " + start + " instead of the previous goal " + lastPath.getGoal()
+                    + "; chaining from the live cell");
         }
 
         this.pathQueue.offer(path);
@@ -401,12 +389,19 @@ public class PathExecutor {
         // Final node: the segment is finished once the player is close to the goal. Without this the
         // last node is only ever retired by the block-heuristic scan above, which requires the player
         // to stand exactly inside the goal cell, and a near miss leaves the segment running forever.
+        // Height is not required to match: the follower often lands beside or just below the goal,
+        // and the next segment is planned from wherever the player really is. The radius is
+        // Chebyshev, the same metric Goal.isAtGoal uses, so a path that ended two cells diagonally
+        // away (the goal-tolerance retry) still counts as arriving.
+        BlockPos segmentGoal = this.blockPath.get(this.blockPath.size() - 1);
+        double goalDx = Math.abs(mc.player.getX() - (segmentGoal.getX() + 0.5));
+        double goalDz = Math.abs(mc.player.getZ() - (segmentGoal.getZ() + 0.5));
         if (this.target >= this.blockPath.size() - 1
-                && horizontalDistToCurrent <= NODE_REACHED_HORIZONTAL_DIST + 0.3
-                && verticalDistToCurrent <= NODE_REACHED_VERTICAL_TOLERANCE) {
+                && mc.player.onGround()
+                && Math.max(goalDx, goalDz) <= SEGMENT_COMPLETE_RADIUS) {
             this.previous = this.target;
             this.target = this.blockPath.size();
-            log("reached final node, segment complete");
+            log("reached final node " + horizontalDistToCurrent + " blocks from the segment goal, segment complete");
         }
 
         // Two moves alternating for seconds still covers distance every tick, so progress is measured

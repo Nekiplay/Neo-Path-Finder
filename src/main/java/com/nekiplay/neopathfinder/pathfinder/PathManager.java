@@ -38,6 +38,8 @@ public final class PathManager {
     private static final int GOAL_TOLERANCE = 2;
     /** Replans of one segment allowed before the run is failed instead of looping forever. */
     private static final int MAX_REPLANS_PER_SEGMENT = 6;
+    /** Distance from the segment goal at which a replan request counts as the goal being reached. */
+    private static final double SEGMENT_GOAL_RADIUS = 2.0;
     private static PathManager instance;
 
     private final Deque<Pair<BlockPos, BlockPos>> pathQueue = new ConcurrentLinkedDeque<>();
@@ -55,6 +57,14 @@ public final class PathManager {
     private int replanAttempts = 0;
     /** Destination of the segment currently being planned or walked; used to replan it in place. */
     private volatile BlockPos currentSegmentEnd = null;
+    /**
+     * True while the segment planned for the last queued waypoint is still being walked. Without
+     * it the queue looked empty the moment that segment was queued, so the run reported success
+     * and stopped the executor before the player had walked it.
+     */
+    private volatile boolean finalSegmentPending = false;
+    /** Waypoints queued by the last start(), only used for progress reporting. */
+    private int totalWaypoints = 0;
 
     private PathManager() {
     }
@@ -156,7 +166,10 @@ public final class PathManager {
         this.failed = false;
         this.replanAttempts = 0;
         this.currentSegmentEnd = null;
+        this.finalSegmentPending = false;
+        this.totalWaypoints = this.pathQueue.size();
         this.pathExecutor.start();
+        Logger.sendLog("Started with " + this.totalWaypoints + " waypoint(s): " + this.getQueuedTargets());
         Logger.sendMessage("[Pathfinder] Started");
     }
 
@@ -176,6 +189,7 @@ public final class PathManager {
         this.enabled = false;
         this.pathfinding = false;
         this.skipTick = false;
+        this.finalSegmentPending = false;
         this.pathQueue.clear();
         this.resetStatesAfterStop();
 
@@ -227,6 +241,21 @@ public final class PathManager {
         }
         BlockPos liveStart = PlayerUtil.getPathStartPos();
         BlockPos destination = segmentEnd;
+        // Chebyshev, matching Goal.isAtGoal: the goal-tolerance retry can end two cells diagonally
+        // away, which is far in Euclidean terms but is an arrived waypoint.
+        double goalDistance = Math.max(Math.abs(liveStart.getX() - destination.getX()),
+                Math.abs(liveStart.getZ() - destination.getZ()));
+        if (goalDistance <= SEGMENT_GOAL_RADIUS) {
+            // Already beside the segment goal: it is reached, so move on instead of replanning a
+            // segment that has nothing left to walk.
+            Logger.sendLog("No progress near " + liveStart + ", but it is within " + goalDistance
+                    + " blocks of the segment goal. Treating " + destination + " as reached");
+            this.replanAttempts = 0;
+            this.currentSegmentEnd = null;
+            this.pathExecutor.stop();
+            this.pathExecutor.start();
+            return;
+        }
         Logger.sendLog("No progress near " + liveStart + ", replanning segment to " + destination
                 + " (attempt " + this.replanAttempts + "/" + MAX_REPLANS_PER_SEGMENT + ")");
         this.pathExecutor.stop();
@@ -265,6 +294,11 @@ public final class PathManager {
 
         boolean okToPath = this.pathExecutor.onTick();
 
+        if (this.finalSegmentPending && this.pathExecutor.isIdle()) {
+            // The last planned segment has been walked and drained: only now is the run complete.
+            this.finalSegmentPending = false;
+        }
+
         // let the executor consume the freshly queued path
         if (this.skipTick) {
             this.skipTick = false;
@@ -288,8 +322,9 @@ public final class PathManager {
             return;
         }
 
-        if (this.pathQueue.isEmpty()) {
-            if (this.pathExecutor.getState() == PathExecutor.State.WAITING && !this.pathfinding) {
+        if (this.pathQueue.isEmpty() && !this.finalSegmentPending) {
+            if (!this.pathfinding && this.pathExecutor.isIdle()) {
+                Logger.sendMessage("[Pathfinder] Path complete: all " + this.totalWaypoints + " waypoint(s) reached");
                 this.succeeded = true;
                 this.stop("Completed path queue");
             }
@@ -330,7 +365,10 @@ public final class PathManager {
                 BlockPos start = liveStart;
                 BlockPos end = startEnd.getSecond();
                 this.currentSegmentEnd = end;
-                Logger.sendLog("planning segment " + start + " -> " + end + " (" + this.pathQueue.size() + " more queued)");
+                int remaining = this.pathQueue.size();
+                Logger.sendMessage("[Pathfinder] Waypoint " + (this.totalWaypoints - remaining) + "/"
+                        + this.totalWaypoints + " reached, " + remaining + " more queued. Planning "
+                        + start + " -> " + end);
                 double walkSpeed = mc.player.getSpeed();
                 CalculationContext ctx = new CalculationContext(walkSpeed * 1.3, walkSpeed, walkSpeed * 0.3);
                 BlockPos standingCell = start;
@@ -368,11 +406,13 @@ public final class PathManager {
                     if (path == null) {
                         // The exact goal cell can genuinely be unreachable (a ledge, a cell behind an
                         // obstacle). Retry accepting any node next to it instead of failing outright.
-                        goal.setTolerance(GOAL_TOLERANCE);
-                        finder = new AStarPathFinder(start.getX(), start.getY(), start.getZ(), goal, ctx);
-                        path = finder.calculatePath();
-                        Logger.sendLog("Retried search with goal tolerance " + GOAL_TOLERANCE + ": "
-                                + (path != null ? path.getPath().size() + " nodes" : "still nothing"));
+                        for (int tolerance = GOAL_TOLERANCE; tolerance <= GOAL_TOLERANCE * 2 && path == null; tolerance += GOAL_TOLERANCE) {
+                            goal.setTolerance(tolerance);
+                            finder = new AStarPathFinder(start.getX(), start.getY(), start.getZ(), goal, ctx);
+                            path = finder.calculatePath();
+                            Logger.sendLog("Retried search with goal tolerance " + tolerance + ": "
+                                    + (path != null ? path.getPath().size() + " nodes" : "still nothing"));
+                        }
                     }
                     searchMs = (System.nanoTime() - searchStartNs) / 1_000_000.0;
                     searchTelemetry = finder.getLastTelemetry();
@@ -390,7 +430,8 @@ public final class PathManager {
                         violation = com.nekiplay.neopathfinder.pathfinder.util.BlockUtil.INSTANCE.pathViolation(ctx, path.getPath(), true);
                     }
                     if (violation != null) {
-                        Logger.sendLog("path rejected: " + violation);
+                        Logger.sendWarning("[Pathfinder] Segment " + standingCell + " -> " + end
+                                + " rejected by the collision check: " + violation);
                         path = null;
                     }
                 }
@@ -412,9 +453,13 @@ public final class PathManager {
                     );
                     // A freshly planned segment gets its own replan budget.
                     this.replanAttempts = 0;
+                    this.finalSegmentPending = this.pathQueue.isEmpty();
                     PathExecutor.getInstance().queuePath(path);
+                    Logger.sendMessage("[Pathfinder] Walking segment of " + path.getPath().size()
+                            + " nodes to " + end + ", " + this.pathQueue.size() + " waypoint(s) left");
                 } else {
-                    Logger.sendLog("No Path Found");
+                    Logger.sendError("[Pathfinder] No path found from " + standingCell + " to " + end
+                            + " (the collision check and the search both failed)");
                     failed = true;
                     this.lastTelemetry = new PathfindingTelemetry(
                             startedAtMs,
