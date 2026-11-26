@@ -605,4 +605,69 @@ object BlockUtil {
                 MovementHelper.canWalkThrough(bsa, pos.x, pos.y + 1, pos.z, bsa.get(pos.x, pos.y + 1, pos.z)) &&
                 MovementHelper.canWalkThrough(bsa, pos.x, pos.y + 2, pos.z, bsa.get(pos.x, pos.y + 2, pos.z))
     }
+
+    /**
+     * Find the closest standable-and-walkable cell within [radius] of [from].
+     * Returns null when none is found (caller should fail gracefully).
+     */
+    fun findClosestUnblocked(ctx: CalculationContext, from: BlockPos, radius: Int): BlockPos? {
+        if (isStandableCell(ctx, from)) return from
+        var best: BlockPos? = null
+        var bestDist = Double.MAX_VALUE
+        for (dy in 0..3) {
+            for (dx in -radius..radius) {
+                for (dz in -radius..radius) {
+                    if (dx == 0 && dz == 0 && dy == 0) continue
+                    val candidate = BlockPos(from.x + dx, from.y + dy, from.z + dz)
+                    if (!isStandableCell(ctx, candidate)) continue
+                    val dist = sqrt((dx * dx + dz * dz + dy * dy).toDouble())
+                    if (dist < bestDist) {
+                        bestDist = dist
+                        best = candidate
+                    }
+                }
+            }
+        }
+        return best
+        return best
+    }
+
+    /**
+     * Walk along a ray from (ox, oy, oz) in direction (ux, uz) up to [maxDist] blocks,
+     * sampling every [step] blocks, and return the first loaded standable cell found.
+     * This is for finding a pathable point near a far-away goal when the exact chunk
+     * boundary cell is unloaded or un-standable.
+     */
+    fun findClosestUnblockedOnRay(
+        ctx: CalculationContext,
+        ox: Int, oy: Int, oz: Int,
+        ux: Double, uz: Double,
+        maxDist: Int,
+        step: Int = 8
+    ): BlockPos? {
+        var dist = maxDist
+        while (dist > step) {
+            val px = ox + (ux * dist).toInt()
+            val pz = oz + (uz * dist).toInt()
+            val world = ctx.world ?: return null
+            val chunkLoaded = world.isLoaded(BlockPos(px, oy, pz))
+            if (chunkLoaded) {
+                for (dy in 0..3) {
+                    for (dx in -2..2) {
+                        for (dz in -2..2) {
+                            val cx = px + dx
+                            val cz = pz + dz
+                            val candidate = BlockPos(cx, oy + dy, cz)
+                            if (!world.isLoaded(candidate)) continue
+                            if (isStandableCell(ctx, candidate)) {
+                                return candidate
+                            }
+                        }
+                    }
+                }
+            }
+            dist -= step
+        }
+        return null
+    }
 }

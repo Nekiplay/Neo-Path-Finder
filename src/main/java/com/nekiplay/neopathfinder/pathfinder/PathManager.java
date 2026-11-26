@@ -2,6 +2,7 @@ package com.nekiplay.neopathfinder.pathfinder;
 
 import kotlin.Pair;
 import com.nekiplay.neopathfinder.NeoPathfinder;
+import com.nekiplay.neopathfinder.pathfinder.cache.DeadEndCache;
 import com.nekiplay.neopathfinder.pathfinder.calculate.Path;
 import com.nekiplay.neopathfinder.pathfinder.calculate.PathNode;
 import com.nekiplay.neopathfinder.pathfinder.calculate.PathfindingTelemetry;
@@ -55,16 +56,23 @@ public final class PathManager {
     private boolean succeeded = false;
     private volatile PathfindingTelemetry lastTelemetry = null;
     private int replanAttempts = 0;
+    /** Shared dead-end cache across search retries for the current segment. */
+    private DeadEndCache deadEndCache = new DeadEndCache();
     /** Destination of the segment currently being planned or walked; used to replan it in place. */
     private volatile BlockPos currentSegmentEnd = null;
+    /** Minimum Chebyshev distance to the segment end ever observed (for overshoot detection). */
+    private volatile double closestToSegmentEnd = Double.MAX_VALUE;
+    /** Waypoints queued by the last start(), only used for progress reporting. */
+    /** Waypoints queued by the last start(), only used for progress reporting. */
+    private int totalWaypoints = 0;
+    /** The final destination of the entire run, carried across segments for fallback planning. */
+    private BlockPos finalDestination = null;
     /**
      * True while the segment planned for the last queued waypoint is still being walked. Without
      * it the queue looked empty the moment that segment was queued, so the run reported success
      * and stopped the executor before the player had walked it.
      */
     private volatile boolean finalSegmentPending = false;
-    /** Waypoints queued by the last start(), only used for progress reporting. */
-    private int totalWaypoints = 0;
 
     private PathManager() {
     }
@@ -166,6 +174,9 @@ public final class PathManager {
         this.failed = false;
         this.replanAttempts = 0;
         this.currentSegmentEnd = null;
+        this.closestToSegmentEnd = Double.MAX_VALUE;
+        this.deadEndCache = new DeadEndCache();
+        this.finalDestination = this.pathQueue.peekLast().getSecond();
         this.finalSegmentPending = false;
         this.totalWaypoints = this.pathQueue.size();
         this.pathExecutor.start();
@@ -260,6 +271,7 @@ public final class PathManager {
                 + " (attempt " + this.replanAttempts + "/" + MAX_REPLANS_PER_SEGMENT + ")");
         this.pathExecutor.stop();
         this.pathExecutor.start();
+        this.deadEndCache = new DeadEndCache();
         this.pathQueue.addFirst(new Pair<>(liveStart, destination));
     }
 
@@ -299,6 +311,29 @@ public final class PathManager {
             this.finalSegmentPending = false;
         }
 
+        // Overshoot detection: if the player was close to the segment end and now goes further
+        // away, treat the segment as reached (high-speed overshoot).
+        BlockPos currentEnd = this.currentSegmentEnd;
+        if (currentEnd != null && mc.player != null) {
+            BlockPos playerCell = PlayerUtil.getPathStartPos();
+            double chebDist = Math.max(
+                    Math.abs(playerCell.getX() - currentEnd.getX()),
+                    Math.abs(playerCell.getZ() - currentEnd.getZ())
+            );
+            if (chebDist < this.closestToSegmentEnd) {
+                this.closestToSegmentEnd = chebDist;
+            } else if (this.closestToSegmentEnd <= SEGMENT_GOAL_RADIUS
+                    && chebDist > SEGMENT_GOAL_RADIUS * 3) {
+                // Was within goal radius, now far away — player overshot the segment end.
+                Logger.sendLog("Overshot segment end " + currentEnd + " (closest "
+                        + this.closestToSegmentEnd + ", now " + chebDist + "), marking reached");
+                this.closestToSegmentEnd = Double.MAX_VALUE;
+                this.currentSegmentEnd = null;
+                this.pathExecutor.stop();
+                this.pathExecutor.start();
+                return;
+            }
+        }
         // let the executor consume the freshly queued path
         if (this.skipTick) {
             this.skipTick = false;
@@ -324,6 +359,21 @@ public final class PathManager {
 
         if (this.pathQueue.isEmpty() && !this.finalSegmentPending) {
             if (!this.pathfinding && this.pathExecutor.isIdle()) {
+                // If the player has not reached the overall final destination, queue a new
+                // segment from the current position toward it instead of declaring success.
+                if (this.finalDestination != null && mc.player != null) {
+                    BlockPos playerCell = PlayerUtil.getPathStartPos();
+                    boolean atFinal = Math.max(
+                            Math.abs(playerCell.getX() - finalDestination.getX()),
+                            Math.abs(playerCell.getZ() - finalDestination.getZ())
+                    ) <= SEGMENT_GOAL_RADIUS;
+                    if (!atFinal) {
+                        Logger.sendLog("Queue empty but final destination " + finalDestination
+                                + " not yet reached (player at " + playerCell + "); re-queuing via proxy");
+                        this.pathQueue.add(new Pair<>(playerCell, finalDestination));
+                        return;
+                    }
+                }
                 Logger.sendMessage("[Pathfinder] Path complete: all " + this.totalWaypoints + " waypoint(s) reached");
                 this.succeeded = true;
                 this.stop("Completed path queue");
@@ -365,6 +415,7 @@ public final class PathManager {
                 BlockPos start = liveStart;
                 BlockPos end = startEnd.getSecond();
                 this.currentSegmentEnd = end;
+                this.closestToSegmentEnd = Double.MAX_VALUE;
                 int remaining = this.pathQueue.size();
                 Logger.sendMessage("[Pathfinder] Waypoint " + (this.totalWaypoints - remaining) + "/"
                         + this.totalWaypoints + " reached, " + remaining + " more queued. Planning "
@@ -414,6 +465,25 @@ public final class PathManager {
                                     + (path != null ? path.getPath().size() + " nodes" : "still nothing"));
                         }
                     }
+                    if (path == null) {
+                        // Still no path — try a fresh search from a slightly different start
+                        // (the dead-end cache inside the finder already tracked chunk dead-ends
+                        // during the first pass; a new finder clears that so a reroute may find
+                        // an alternate path).
+                        BlockPos shiftedStart = com.nekiplay.neopathfinder.pathfinder.util.BlockUtil.INSTANCE
+                                .findClosestUnblocked(ctx, start, 3);
+                        if (shiftedStart != null && !shiftedStart.equals(start)) {
+                            Logger.sendLog("Dead-end, retrying from shifted start " + shiftedStart);
+                            goal.setTolerance(0);
+                            finder = new AStarPathFinder(
+                                    shiftedStart.getX(), shiftedStart.getY(), shiftedStart.getZ(), goal, ctx);
+                            path = finder.calculatePath();
+                            if (path != null) {
+                                // Prepend original start so executor walks to the shifted cell first
+                                path.prependStart(start);
+                            }
+                        }
+                    }
                     searchMs = (System.nanoTime() - searchStartNs) / 1_000_000.0;
                     searchTelemetry = finder.getLastTelemetry();
                     Logger.sendLog("done pathfinding");
@@ -436,6 +506,14 @@ public final class PathManager {
                     }
                 }
                 if (path != null) {
+                    // Snap every node to integer coordinates so that half-slab targets never
+                    // produce a fractional step the executor cannot reach.
+                    List<BlockPos> rawPath = path.getPath();
+                    for (int i = 0; i < rawPath.size(); i++) {
+                        BlockPos p = rawPath.get(i);
+                        rawPath.set(i, new BlockPos(p.getX(), p.getY(), p.getZ()));
+                    }
+                    // Re-smooth after snapping.
                     List<BlockPos> smoothedPath = path.getSmoothedPath();
                     this.lastTelemetry = new PathfindingTelemetry(
                             startedAtMs,

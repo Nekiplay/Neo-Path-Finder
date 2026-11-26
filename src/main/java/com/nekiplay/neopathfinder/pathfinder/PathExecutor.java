@@ -38,8 +38,8 @@ public class PathExecutor {
     private static final double MIN_FORWARD_RISE = -0.05;
     private static final double MAX_JUMPABLE_RISE = 1.25;
     private static final double MAX_JUMP_PROBE_DISTANCE = 2.2;
-    private static final double NODE_REACHED_HORIZONTAL_DIST = 0.7;
-    private static final double NODE_REACHED_VERTICAL_TOLERANCE = 1.35;
+    private static final double NODE_REACHED_HORIZONTAL_DIST = 0.65;
+    private static final double NODE_REACHED_VERTICAL_TOLERANCE = 2.0;
     /**
      * Radius around the final node that retires a segment. Landing beside a waypoint is normal, and
      * demanding node-precision left the segment running so the next waypoint was never planned.
@@ -296,17 +296,37 @@ public class PathExecutor {
                 }
             }
 
-            if (current != -1 && current > previous) {
-                this.previous = current;
-                this.target = current + 1;
-                this.state = State.TRAVERSING;
-                this.pastTarget = false;
-                this.interpolated = false;
-                this.interpolYawDiff = 0;
-                this.nodeChangeTime = System.currentTimeMillis();
-                log("changed target from " + this.previous + " to " + this.target);
-                RotationHandler.getInstance().stop();
+            // Guard against pulling the target backward. Once the per-frame or segment-progress
+            // check has advanced this.target, the map scan must not regress it. A backward regression
+            // produces the classic stuck-in-place shuffle: the player reaches node N, target=N+1, but
+            // the map still sees the player inside node N (blockTarget=N) and resets target to N+1
+            // (same — harmless) — or the next retick safely returns target=N+1 anyway. The only
+            // dangerous case is when target is N+1 and the map returns blockTarget <= previous
+            // (a cell the player was at before). We allow any blockTarget > previous here, but if
+            // blockTarget <= this.target - 1 it must also be strictly > this.previous — otherwise
+            // the map can reselect a node the player already retired.
+            if (current != -1 && current > this.previous) {
+                // If this blockTarget is at or behind the current target index, only accept it when
+                // it is ahead of the entire retired range. Otherwise it pulls the follower back.
+                if (current <= this.target - 1 && current <= this.previous + 1) {
+                    // This blockTarget was already retired; skip to avoid backward jitter.
+                } else if (!nodeSwitchDelay.passed()) {
+                    // Respect the node switch delay even for map-scan advances. Without this,
+                    // the scanner fires the instant the player stands in the cell, far before
+                    // the walking animation has reached it, and the follower races ahead.
+                } else {
+                    this.previous = current;
+                    this.target = current + 1;
+                    this.state = State.TRAVERSING;
+                    this.pastTarget = false;
+                    this.interpolated = false;
+                    this.interpolYawDiff = 0;
+                    this.nodeChangeTime = System.currentTimeMillis();
+                    log("changed target from " + this.previous + " to " + this.target);
+                    RotationHandler.getInstance().stop();
+                }
             }
+
 
             if (horizontalSpeed < STUCK_SPEED_THRESHOLD) {
                 if (!this.stuckTimer.isScheduled()) {
@@ -354,6 +374,9 @@ public class PathExecutor {
                 return true;
             }
             log("loaded new path target: " + this.target + ", prev: " + this.previous);
+            // Reset the node switch delay whenever a fresh path is loaded; this prevents the
+            // first node from being instantly skipped before the player has physically moved.
+            this.nodeSwitchDelay.schedule(80 + this.random.nextInt(120));
         }
 
         BlockPos target = this.blockPath.get(this.target);
@@ -380,7 +403,7 @@ public class PathExecutor {
             if ((closeToCurrentNode || passedCurrentNode) && nodeSwitchDelay.passed()) {
                 this.previous = this.target;
                 this.target++;
-                nodeSwitchDelay.schedule(50 + random.nextInt(70));
+                nodeSwitchDelay.schedule(80 + random.nextInt(120));
                 target = this.blockPath.get(this.target);
                 log("advanced to next target (" + (closeToCurrentNode ? "close" : "segment progress") + ")");
             }
@@ -396,9 +419,11 @@ public class PathExecutor {
         BlockPos segmentGoal = this.blockPath.get(this.blockPath.size() - 1);
         double goalDx = Math.abs(mc.player.getX() - (segmentGoal.getX() + 0.5));
         double goalDz = Math.abs(mc.player.getZ() - (segmentGoal.getZ() + 0.5));
+        double goalDy = Math.abs(mc.player.getY() - segmentGoal.getY());
         if (this.target >= this.blockPath.size() - 1
                 && mc.player.onGround()
-                && Math.max(goalDx, goalDz) <= SEGMENT_COMPLETE_RADIUS) {
+                && Math.max(goalDx, goalDz) <= SEGMENT_COMPLETE_RADIUS
+                && goalDy <= 3.0) {
             this.previous = this.target;
             this.target = this.blockPath.size();
             log("reached final node " + horizontalDistToCurrent + " blocks from the segment goal, segment complete");
@@ -474,35 +499,13 @@ public class PathExecutor {
         } else if (!embedded) {
             this.retreatIndex = -1;
         }
-        boolean retreatActive = embedded || this.retreatHoldTicks > 0 || this.retreatIndex >= 0;
-        if (retreatActive && chosenIndex == this.target && !BlockUtil.INSTANCE.canWalkStraight(ctx, playerFeet, playerFeet.y, target)) {
-            // Nothing ahead is reachable in a straight line: step back into the node behind us (this
-            // is the cell the path started from, e.g. after escaping a fence cell) and stay on it
-            // until it is reached, so the follower does not jitter between the two.
-            if (this.retreatIndex < 0) {
-                for (int i = 0; i < this.target; i++) {
-                    if (BlockUtil.INSTANCE.canWalkStraight(ctx, playerFeet, playerFeet.y, this.blockPath.get(i))) {
-                        this.retreatIndex = i;
-                        break;
-                    }
-                }
-            }
-            if (this.retreatIndex >= 0 && this.retreatIndex < this.blockPath.size()) {
-                this.retreatHoldTicks = RETREAT_HOLD_TICKS;
-                BlockPos retreat = this.blockPath.get(this.retreatIndex);
-                double retreatDist = Math.hypot(mc.player.getX() - retreat.getX() - 0.5, mc.player.getZ() - retreat.getZ() - 0.5);
-                if (retreatDist <= NODE_REACHED_HORIZONTAL_DIST + 0.15
-                        || !BlockUtil.INSTANCE.canWalkStraight(ctx, playerFeet, playerFeet.y, retreat)) {
-                    this.retreatIndex = -1;
-                } else {
-                    movementTarget = retreat;
-                    this.moveTargetIndex = this.retreatIndex;
-                    this.retreatHoldTicks = RETREAT_HOLD_TICKS;
-                }
-            }
-        } else {
-            this.retreatIndex = -1;
-        }
+        // Retreat is a last-resort escape for when the player is physically inside a thin obstacle
+        // (fence post, wall corner) and cannot see the next target in a straight line.  It must
+        // never trigger for a normal approach toward a diagonal or offset point: the follower
+        // happens to be just out of direct line-of-sight to the far end of a two-step corner, but
+        // walking forward rounds the corner correctly.  A retreat in that case pulls the player
+        // back through the last node, producing the classic stuck-in-place jitter.
+        boolean retreatActive = embedded && !BlockUtil.INSTANCE.canWalkStraight(ctx, playerFeet, playerFeet.y, target);
 
         int targetX = movementTarget.getX();
         int targetZ = movementTarget.getZ();
