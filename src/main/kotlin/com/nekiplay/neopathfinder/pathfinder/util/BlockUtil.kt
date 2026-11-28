@@ -6,7 +6,6 @@ import com.nekiplay.neopathfinder.pathfinder.movement.MovementHelper
 import net.minecraft.core.BlockPos
 import net.minecraft.core.Direction
 import net.minecraft.util.Mth
-import net.minecraft.world.level.block.SlabBlock
 import net.minecraft.world.level.block.SnowLayerBlock
 import net.minecraft.world.level.block.StairBlock
 import net.minecraft.world.level.block.state.BlockState
@@ -303,10 +302,7 @@ object BlockUtil {
         stepX: Int,
         stepZ: Int
     ): Double {
-        if (state.block is SlabBlock || state.block is StairBlock) {
-            return if (MovementHelper.hasTop(state, stepX, stepZ)) 1.0 else 0.5
-        }
-        return MovementHelper.collisionMaxY(state, ctx.world, BlockPos(x, y, z))
+        return MovementHelper.walkSurfaceOffset(state, ctx.world, BlockPos(x, y, z), stepX, stepZ)
     }
 
     fun canWalkBetween(ctx: CalculationContext, start: BlockPos, end: BlockPos): Boolean {

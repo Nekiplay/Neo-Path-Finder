@@ -108,15 +108,23 @@ class MovementDiagonal(mm: NeoPathfinder, from: BlockPos, to: BlockPos) : Moveme
             }
 
             if (ascend) {
-                // Safe way to get destMaxY
-                val destMaxY = try {
-                    destState.getCollisionShape(ctx.world, BlockPos(destX, y + 1, destZ)).bounds().maxY
-                } catch (e: UnsupportedOperationException) {
-                    (y + 1.0)
-                }
+                // The destination is one cell above the source, so the cell offset belongs in the
+                // comparison. Without it a bottom slab (0.5) -> full block above (1.0) looks like a
+                // half-block step, while the real climb is 1.5 blocks and cannot be jumped.
+                val stepX = destX - x
+                val stepZ = destZ - z
+                val sourceSurfaceY = y + MovementHelper.collisionMaxY(sourceState, ctx.world, BlockPos(x, y, z))
+                val destSurfaceY = (y + 1) + MovementHelper.walkSurfaceOffset(
+                    destState,
+                    ctx.world,
+                    BlockPos(destX, y + 1, destZ),
+                    stepX,
+                    stepZ
+                )
+                val rise = destSurfaceY - sourceSurfaceY
                 when {
-                    destMaxY - sourceMaxY <= 0.5 -> res.cost = cost * SQRT_2
-                    destMaxY - sourceMaxY <= 1.125 -> res.cost = cost * SQRT_2 + ctx.cost.JUMP_ONE_BLOCK_COST
+                    rise <= 0.5 -> res.cost = cost * SQRT_2
+                    rise <= MovementHelper.MAX_JUMPABLE_RISE -> res.cost = cost * SQRT_2 + ctx.cost.JUMP_ONE_BLOCK_COST
                     else -> res.cost = ctx.cost.INF_COST
                 }
                 return

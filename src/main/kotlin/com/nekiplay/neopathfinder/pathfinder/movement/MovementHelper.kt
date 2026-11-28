@@ -14,6 +14,12 @@ import net.minecraft.world.level.block.state.properties.SlabType
 object MovementHelper {
 
     /**
+     * Highest surface rise the player can clear with a jump. The vanilla jump apex is ~1.25
+     * blocks, so anything above this can never be climbed, not even from a half block.
+     */
+    const val MAX_JUMPABLE_RISE = 1.25
+
+    /**
      * Vanilla step-up allowance of the local player (attribute `minecraft:step_height`,
      * exposed as [net.minecraft.world.entity.Entity.maxUpStep]). Not hardcoded: read from the
      * live player each time, so modifiers/potions are honoured. Without a player nothing may
@@ -31,6 +37,23 @@ object MovementHelper {
         } catch (_: UnsupportedOperationException) {
             0.0
         }
+    }
+
+    /**
+     * Height of the surface the player actually stands on, relative to the block's own base.
+     * A bottom slab and a stair entered from its low side are only half a block high; every
+     * other block uses its collision top. [stepX]/[stepZ] is the direction of travel, which is
+     * what decides whether a stair is entered from the low or the high side.
+     *
+     * This is the value a movement check must use instead of the raw collision top: comparing
+     * collision tops of blocks in different cells silently drops the one-block cell offset and
+     * makes an impossible 1.5-block climb look like a half-block step.
+     */
+    fun walkSurfaceOffset(state: BlockState, world: BlockGetter, pos: BlockPos, stepX: Int, stepZ: Int): Double {
+        if (state.block is SlabBlock || state.block is StairBlock) {
+            return if (hasTop(state, stepX, stepZ)) 1.0 else 0.5
+        }
+        return collisionMaxY(state, world, pos)
     }
 
     fun canWalkThrough(

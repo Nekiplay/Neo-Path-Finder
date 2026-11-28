@@ -36,7 +36,7 @@ public class PathExecutor {
     private static final double COLLISION_CHECK_DISTANCE = 0.7;
     private static final int SEGMENT_TIMEOUT_MS = 30000; // 30 seconds per path segment
     private static final double MIN_FORWARD_RISE = -0.05;
-    private static final double MAX_JUMPABLE_RISE = 1.25;
+    private static final double MAX_JUMPABLE_RISE = MovementHelper.MAX_JUMPABLE_RISE;
     private static final double MAX_JUMP_PROBE_DISTANCE = 2.2;
     private static final double NODE_REACHED_HORIZONTAL_DIST = 0.65;
     private static final double NODE_REACHED_VERTICAL_TOLERANCE = 2.0;
