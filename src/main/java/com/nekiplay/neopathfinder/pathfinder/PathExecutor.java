@@ -698,7 +698,7 @@ public class PathExecutor {
         int landingX = playerPos.getX() + stepX;
         int landingZ = playerPos.getZ() + stepZ;
         int playerY = playerPos.getY();
-        double sourceSurfaceY = getSurfaceY(ctx, playerPos.getX(), playerY, playerPos.getZ(), stepX, stepZ);
+        double sourceSurfaceY = getSourceSurfaceY(ctx, playerPos.getX(), playerY, playerPos.getZ());
 
         double bestRise = Double.POSITIVE_INFINITY;
         for (int y = playerY - 1; y <= playerY + 2; y++) {
@@ -735,6 +735,22 @@ public class PathExecutor {
     private double getSurfaceY(CalculationContext ctx, int x, int y, int z, int stepX, int stepZ) {
         BlockState state = ctx.get(x, y, z);
         double surface = y + getSurfaceOffset(ctx, state, x, y, z, stepX, stepZ);
+        return withStepOverCover(ctx, x, y, z, surface);
+    }
+
+    /**
+     * Surface the player leaves a cell from. A stair is crossed over its whole cell, so walking up
+     * it ends on the tall side and the player stands on the collision top. Using the entered-side
+     * (low step) offset here made every following stair of a staircase look like a full-block
+     * climb, so the follower jumped on correctly oriented stairs instead of walking up.
+     */
+    private double getSourceSurfaceY(CalculationContext ctx, int x, int y, int z) {
+        BlockState state = ctx.get(x, y, z);
+        double surface = y + MovementHelper.INSTANCE.collisionMaxY(state, ctx.getWorld(), new BlockPos(x, y, z));
+        return withStepOverCover(ctx, x, y, z, surface);
+    }
+
+    private double withStepOverCover(CalculationContext ctx, int x, int y, int z, double surface) {
         // Add the height of a cover the player steps over without jumping (snow layer, carpet, ...).
         // Without it the rise of such a step is overestimated and the follower schedules a jump.
         BlockPos coverPos = new BlockPos(x, y + 1, z);

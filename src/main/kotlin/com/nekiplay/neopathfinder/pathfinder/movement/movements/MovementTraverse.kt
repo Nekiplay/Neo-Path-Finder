@@ -63,28 +63,27 @@ class MovementTraverse(mm: NeoPathfinder, from: BlockPos, to: BlockPos) : Moveme
             }
             val sourceState = ctx.get(x, y, z)
             val destState = ctx.get(destX, y, destZ)
-            val sourceShape = sourceState.getCollisionShape(ctx.world, BlockPos(x, y, z))
-            val destShape = destState.getCollisionShape(ctx.world, BlockPos(destX, y, destZ))
-            val sourceHeight = if (sourceShape.isEmpty) 0.0 else sourceShape.bounds().maxY
-            val destHeight = if (destShape.isEmpty) 0.0 else destShape.bounds().maxY
-//      if (snow) {
-//        if (destHeight == -1.0) {
-//          destHeight = destState.block.blockBoundsMaxY
-//        }
-//
-//        if (sourceHeight == -1.0) {
-//          sourceHeight = sourceState.block.blockBoundsMaxY
-//        }
-            val diff = destHeight - sourceHeight
-//      println("SourceHeight: $sourceHeight, DestHeight: $destHeight, Diff: $diff")
+            val stepX = destX - x
+            val stepZ = destZ - z
+            // The source is left from its collision top: a stair the player walks up is crossed
+            // over its whole cell and stood on at the tall side. The destination is entered from
+            // the low side when the stair faces the travel direction, so only half a block is
+            // climbed there. Raw collision tops made every correctly oriented stair look like a
+            // one-block jump.
+            val sourceSurfaceY = y + MovementHelper.collisionMaxY(sourceState, ctx.world, BlockPos(x, y, z))
+            val destSurfaceY = y + MovementHelper.walkSurfaceOffset(
+                destState,
+                ctx.world,
+                BlockPos(destX, y, destZ),
+                stepX,
+                stepZ
+            )
+            val diff = destSurfaceY - sourceSurfaceY
             res.cost = when {
                 diff <= 0.5 -> ctx.cost.ONE_BLOCK_SPRINT_COST
                 diff <= 1 -> ctx.cost.JUMP_ONE_BLOCK_COST
                 else -> ctx.cost.INF_COST
             }
-//        return
-//      }
-//      res.cost = ctx.cost.ONE_BLOCK_SPRINT_COST
         }
     }
 }
