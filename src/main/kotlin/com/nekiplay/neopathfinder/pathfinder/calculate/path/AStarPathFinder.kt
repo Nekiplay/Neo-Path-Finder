@@ -16,7 +16,7 @@ import com.nekiplay.neopathfinder.pathfinder.util.BlockUtil
 import com.nekiplay.neopathfinder.pathfinder.movement.MovementHelper
 import kotlin.math.abs
 import kotlin.math.sqrt
-
+import com.nekiplay.neopathfinder.util.Logger
 class AStarPathFinder(val startX: Int, val startY: Int, val startZ: Int, val goal: Goal, val ctx: CalculationContext) {
     companion object {
         /**
@@ -48,6 +48,7 @@ class AStarPathFinder(val startX: Int, val startY: Int, val startZ: Int, val goa
     )
 
     private val closedSet: Long2ObjectMap<PathNode> = Long2ObjectOpenHashMap()
+    @Volatile
     private var calculating = false
     private var iterations = 0
     @Volatile
@@ -74,10 +75,9 @@ class AStarPathFinder(val startX: Int, val startY: Int, val startZ: Int, val goa
         // If the goal is outside our render zone, create an intermediate proxy goal
         val proxyGoal = computeProxyGoal()
         return if (proxyGoal != null) {
-            // Search to the proxy, then chain a segment to the real goal
-            searchWithDeadEndTracking(proxyGoal)
+            searchWithDeadEndTracking(proxyGoal, isProxy = true)
         } else {
-            searchWithDeadEndTracking(goal)
+            searchWithDeadEndTracking(goal, isProxy = false)
         }
     }
 
@@ -99,8 +99,9 @@ class AStarPathFinder(val startX: Int, val startY: Int, val startZ: Int, val goa
         val ux = dx / dist
         val uz = dz / dist
 
-        // Walk from radius inward, checking that the found cell has a clear
-        // straight-line corridor from the start (no walls in between).
+        // Walk from radius inward until we find a loaded standable cell.
+        // We DO NOT require canWalkStraight here — if the proxy is behind a wall
+        // A* will explore around it and we fall back to the closest explored node.
         var radius = SEGMENT_RADIUS_BLOCKS
         while (radius > 16) {
             val px = startX + (ux * radius).toInt()
@@ -108,27 +109,24 @@ class AStarPathFinder(val startX: Int, val startY: Int, val startZ: Int, val goa
             if (isChunkLoaded(px, startY, pz)) {
                 val snapped = snapToLoadedStandable(px, startY, pz)
                 if (snapped != null) {
-                    // Verify we can walk straight to this proxy without crossing walls.
-                    val startPos = BlockPos(startX, startY, startZ)
-                    if (BlockUtil.canWalkStraight(ctx, startPos, snapped)) {
-                        return Goal(snapped.x, snapped.y, snapped.z, ctx)
-                    }
+                    return Goal(snapped.x, snapped.y, snapped.z, ctx)
                 }
             }
             radius -= 16
         }
 
-        // Try findClosestUnblockedOnRay with a direct-walk check
+        // Try findClosestUnblockedOnRay without canWalkStraight check
         var rayStep = 64
         while (rayStep >= 8) {
-            val closest = BlockUtil.findClosestUnblockedOnRay(
-                ctx, startX, startY, startZ, ux, uz, SEGMENT_RADIUS_BLOCKS, rayStep
-            )
+            val closest = try {
+                BlockUtil.findClosestUnblockedOnRay(
+                    ctx, startX, startY, startZ, ux, uz, SEGMENT_RADIUS_BLOCKS, rayStep
+                )
+            } catch (e: Exception) {
+                null
+            }
             if (closest != null) {
-                val startPos = BlockPos(startX, startY, startZ)
-                if (BlockUtil.canWalkStraight(ctx, startPos, closest)) {
-                    return Goal(closest.x, closest.y, closest.z, ctx)
-                }
+                return Goal(closest.x, closest.y, closest.z, ctx)
             }
             rayStep /= 2
         }
@@ -136,7 +134,6 @@ class AStarPathFinder(val startX: Int, val startY: Int, val startZ: Int, val goa
         // Absolute fallback: search full distance (caller will retry)
         return null
     }
-
     /** Find a standable cell in the loaded area around (x, y, z). */
     private fun snapToLoadedStandable(x: Int, y: Int, z: Int): BlockPos? {
         for (dy in 0..3) {
@@ -145,10 +142,15 @@ class AStarPathFinder(val startX: Int, val startY: Int, val startZ: Int, val goa
                     val cx = x + dx
                     val cz = z + dz
                     if (!isChunkLoaded(cx, y + dy, cz)) continue
-                    if (MovementHelper.canStandOn(ctx.bsa, cx, y + dy, cz, ctx.get(cx, y + dy, cz))
-                        && MovementHelper.canWalkThrough(ctx.bsa, cx, y + dy + 1, cz, ctx.get(cx, y + dy + 1, cz))
-                        && MovementHelper.canWalkThrough(ctx.bsa, cx, y + dy + 2, cz, ctx.get(cx, y + dy + 2, cz))) {
-                        return BlockPos(cx, y + dy, cz)
+                    try {
+                        if (MovementHelper.canStandOn(ctx.bsa, cx, y + dy, cz, ctx.get(cx, y + dy, cz))
+                            && MovementHelper.canWalkThrough(ctx.bsa, cx, y + dy + 1, cz, ctx.get(cx, y + dy + 1, cz))
+                            && MovementHelper.canWalkThrough(ctx.bsa, cx, y + dy + 2, cz, ctx.get(cx, y + dy + 2, cz))) {
+                            return BlockPos(cx, y + dy, cz)
+                        }
+                    } catch (e: Exception) {
+                        // Partially loaded chunk (Missing Palette entry) — skip this cell.
+                        continue
                     }
                 }
             }
@@ -170,8 +172,11 @@ class AStarPathFinder(val startX: Int, val startY: Int, val startZ: Int, val goa
      * Runs the A* search loop. When the open set is exhausted and the goal
      * is unreachable, records the last-visited chunk as a dead end so the
      * backtrack resolver can avoid it on a re-route.
+     *
+     * @param isProxy when true, the targetGoal is an artificial proxy and we
+     *   fall back to the closest explored node to the **real** goal on exhaustion.
      */
-    private fun searchWithDeadEndTracking(targetGoal: Goal): Path? {
+    private fun searchWithDeadEndTracking(targetGoal: Goal, isProxy: Boolean = false): Path? {
         calculating = true
         iterations = 0
         closedSet.clear()
@@ -185,9 +190,18 @@ class AStarPathFinder(val startX: Int, val startY: Int, val startZ: Int, val goa
         var expandedNodes = 0
         var openSetPeak = 0
 
-        val startCellBlocked = !MovementHelper.canWalkThrough(
-            ctx.bsa, startX, startY + 1, startZ, ctx.get(startX, startY + 1, startZ)
-        )
+        // Track the node closest to the real goal — used for partial-path fallback
+        // when isProxy is true and the proxy is unreachable.
+        var closestToRealNode: PathNode = startNode
+        var closestRealHeuristic = goal.heuristic(startNode.x, startNode.y, startNode.z)
+
+        val startCellBlocked = try {
+            !MovementHelper.canWalkThrough(
+                ctx.bsa, startX, startY + 1, startZ, ctx.get(startX, startY + 1, startZ)
+            )
+        } catch (e: Exception) {
+            false
+        }
         startNode.costSoFar = 0.0
         startNode.totalCost = startNode.costToEnd
         openSet.add(startNode)
@@ -230,6 +244,15 @@ class AStarPathFinder(val startX: Int, val startY: Int, val startZ: Int, val goa
                 continue
             }
 
+            // Update closest-to-real-goal tracking (when searching via a proxy)
+            if (isProxy) {
+                val h = goal.heuristic(currentNode.x, currentNode.y, currentNode.z)
+                if (h < closestRealHeuristic) {
+                    closestRealHeuristic = h
+                    closestToRealNode = currentNode
+                }
+            }
+
             if (targetGoal.isAtGoal(currentNode.x, currentNode.y, currentNode.z)) {
                 calculating = false
                 lastTelemetry = SearchTelemetry(
@@ -244,11 +267,17 @@ class AStarPathFinder(val startX: Int, val startY: Int, val startZ: Int, val goa
             val expandingStart = currentNode === startNode
             for (move in moves) {
                 res.reset()
-                move.calculate(ctx, currentNode.x, currentNode.y, currentNode.z, res)
+                try {
+                    move.calculate(ctx, currentNode.x, currentNode.y, currentNode.z, res)
 
-                if (expandingStart && startCellBlocked && res.y == startY
-                    && !BlockUtil.canWalkStraight(ctx, ctx.startFeet, ctx.startFeet.y, BlockPos(res.x, res.y, res.z))
-                ) {
+                    if (expandingStart && startCellBlocked && res.y == startY
+                        && !BlockUtil.canWalkStraight(ctx, ctx.startFeet, ctx.startFeet.y, BlockPos(res.x, res.y, res.z))
+                    ) {
+                        continue
+                    }
+                } catch (e: Exception) {
+                    // Chunk may be partially loaded (Missing Palette entry) or unreadable
+                    // from this worker thread — treat the neighbour as impassable.
                     continue
                 }
 
@@ -280,7 +309,7 @@ class AStarPathFinder(val startX: Int, val startY: Int, val startZ: Int, val goa
             }
         }
 
-        // If the open set was exhausted (goal unreachable), record the last chunk as dead end.
+        // If the open set was exhausted (goal unreachable), decide what to return.
         val terminationReason = when {
             !calculating -> "stop_requested"
             iterations >= maxIterations -> "max_iterations"
@@ -300,6 +329,19 @@ class AStarPathFinder(val startX: Int, val startY: Int, val startZ: Int, val goa
             openSetPeak = openSetPeak,
             terminationReason = terminationReason
         )
+
+        // --- Partial-path fallback ---
+        // If we were searching via a proxy and couldn't reach it, return a path
+        // to the closest node to the **real** goal that A* explored.
+        if (isProxy && closestToRealNode !== startNode) {
+            val partialPath = Path(startNode, closestToRealNode, targetGoal, ctx)
+            Logger.sendLog(
+                "Partial path: proxy unreachable, returning path to closest node " +
+                "(" + closestToRealNode.x + ", " + closestToRealNode.y + ", " + closestToRealNode.z + ") " +
+                "heuristic " + closestRealHeuristic
+            )
+            return partialPath
+        }
 
         return null
     }

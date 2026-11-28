@@ -485,7 +485,8 @@ public final class PathManager {
                         }
                     }
                     searchMs = (System.nanoTime() - searchStartNs) / 1_000_000.0;
-                    searchTelemetry = finder.getLastTelemetry();
+                    var lastTel = finder != null ? finder.getLastTelemetry() : null;
+                    searchTelemetry = lastTel;
                     Logger.sendLog("done pathfinding");
                 }
                 if (path != null && !start.equals(standingCell)) {

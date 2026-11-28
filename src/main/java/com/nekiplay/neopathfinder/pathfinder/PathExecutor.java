@@ -353,8 +353,10 @@ public class PathExecutor {
         if (this.curr == null || this.target == this.blockPath.size()) {
             log("Path traversed");
             if (this.pathQueue.isEmpty()) {
-                log("Pathqueue is empty");
                 if (this.curr != null) {
+                    // The manager plans next segment asynchronously. Hold position at proxy endpoint.
+                    KeyBindUtil.stopMovement(true);
+                    log("Pathqueue is empty");
                     this.curr = null;
                     this.target = 0;
                     this.previous = -1;
